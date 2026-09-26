@@ -88,6 +88,7 @@ import static android.view.WindowManager.LayoutParams.TYPE_VOICE_INTERACTION_STA
 import static android.view.WindowManager.LayoutParams.TYPE_WALLPAPER;
 import static android.view.WindowManager.LayoutParams.isSystemAlertWindowType;
 import static android.view.WindowManager.ScreenshotSource.SCREENSHOT_KEY_OTHER;
+import static android.view.WindowManager.ScreenshotSource.SCREENSHOT_VENDOR_GESTURE;
 import static android.view.WindowManager.TAKE_SCREENSHOT_FULLSCREEN;
 import static android.view.WindowManager.TAKE_SCREENSHOT_SELECTED_REGION;
 import static android.view.WindowManagerGlobal.ADD_OKAY;
@@ -831,6 +832,9 @@ public class PhoneWindowManager implements WindowManagerPolicy {
     private CameraAvailbilityListener mCameraAvailabilityListener;
     private ScreenshotHelper mScreenshotHelper;
 
+    private ThreeFingerSwipeListener mThreeFingerSwipeListener;
+    private boolean mThreeFingerScreenshotEnabled;
+
     private class PolicyHandler extends Handler {
 
         private PolicyHandler(Looper looper) {
@@ -1074,6 +1078,9 @@ public class PhoneWindowManager implements WindowManagerPolicy {
                     UserHandle.USER_ALL);
             resolver.registerContentObserver(LineageSettings.System.getUriFor(
                     LineageSettings.System.VOLUME_ANSWER_CALL), false, this,
+                    UserHandle.USER_ALL);
+            resolver.registerContentObserver(Settings.System.getUriFor(
+                    Settings.System.THREE_FINGER_SCREENSHOT), false, this,
                     UserHandle.USER_ALL);
             updateSettings();
         }
@@ -2627,6 +2634,8 @@ public class PhoneWindowManager implements WindowManagerPolicy {
 
         mHandler = new PolicyHandler(injector.getLooper());
         mScreenshotHelper = new ScreenshotHelper(mContext);
+        mThreeFingerSwipeListener = new ThreeFingerSwipeListener(mContext, mHandler.getLooper(),
+                () -> takeScreenshot(TAKE_SCREENSHOT_FULLSCREEN, SCREENSHOT_VENDOR_GESTURE));
         mWakeGestureListener = new MyWakeGestureListener(mContext, mHandler);
         mSettingsObserver = new SettingsObserver(mHandler);
         mSettingsObserver.observe();
@@ -3439,6 +3448,18 @@ public class PhoneWindowManager implements WindowManagerPolicy {
             mVolumeAnswerCall = (LineageSettings.System.getIntForUser(resolver,
                     LineageSettings.System.VOLUME_ANSWER_CALL, 0, UserHandle.USER_CURRENT) == 1)
                     && ((mDeviceHardwareWakeKeys & KEY_MASK_VOLUME) != 0);
+
+            // The input monitor can only be created once the system is ready. The listener
+            // talks to WindowManager, so switch it outside mLock.
+            final boolean threeFingerScreenshotEnabled = mSystemReady
+                    && Settings.System.getIntForUser(resolver,
+                            Settings.System.THREE_FINGER_SCREENSHOT, 0,
+                            UserHandle.USER_CURRENT) != 0;
+            if (mThreeFingerScreenshotEnabled != threeFingerScreenshotEnabled) {
+                mThreeFingerScreenshotEnabled = threeFingerScreenshotEnabled;
+                mHandler.post(() ->
+                        mThreeFingerSwipeListener.setEnabled(threeFingerScreenshotEnabled));
+            }
 
             // Configure wake gesture.
             boolean wakeGestureEnabledSetting = Settings.Secure.getIntForUser(resolver,

@@ -6632,6 +6632,14 @@ public final class Settings {
         public static final String SHOW_BATTERY_PERCENT = "status_bar_show_battery_percent";
 
         /**
+         * Whether swiping down with three fingers takes a screenshot.
+         *    0 - Off
+         *    1 - On
+         * @hide
+         */
+        public static final String THREE_FINGER_SCREENSHOT = "three_finger_screenshot";
+
+        /**
          * Whether or not to enable multiple audio focus.
          * When enabled, requires more management by user over application playback activity,
          * for instance pausing media apps when another starts.
@@ -6858,6 +6866,7 @@ public final class Settings {
             PRIVATE_SETTINGS.add(LOCK_TO_APP_ENABLED);
             PRIVATE_SETTINGS.add(EGG_MODE);
             PRIVATE_SETTINGS.add(SHOW_BATTERY_PERCENT);
+            PRIVATE_SETTINGS.add(THREE_FINGER_SCREENSHOT);
             PRIVATE_SETTINGS.add(DISPLAY_COLOR_MODE);
             PRIVATE_SETTINGS.add(DISPLAY_COLOR_MODE_VENDOR_HINT);
             PRIVATE_SETTINGS.add(LOCALE_PREFERENCES);
