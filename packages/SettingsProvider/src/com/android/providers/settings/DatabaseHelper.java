@@ -2537,7 +2537,11 @@ class DatabaseHelper extends SQLiteOpenHelper {
     }
 
     private String getDefaultDeviceName() {
-        return mContext.getResources().getString(R.string.def_device_name_simple, Build.MODEL);
+        // Prefer the market name ("POCO X7") where the device sets one: Build.MODEL is often a
+        // model number ("24095PCADG").
+        final String marketName = SystemProperties.get("ro.product.marketname");
+        return mContext.getResources().getString(R.string.def_device_name_simple,
+                TextUtils.isEmpty(marketName) ? Build.MODEL : marketName);
     }
 
     private TelephonyManager getTelephonyManager() {
