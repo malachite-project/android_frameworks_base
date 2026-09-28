@@ -76,11 +76,14 @@ final class ThreeFingerSwipeListener {
                 return;
             }
             mReceiver = new Receiver(mInputMonitor.getInputChannel(), mLooper);
+            Slog.i(TAG, "enabled: start spread " + mMaxStartSpread + " px, swipe "
+                    + mSwipeDistance + " px (three fingers together)");
         } else {
             mReceiver.dispose();
             mReceiver = null;
             mInputMonitor.dispose();
             mInputMonitor = null;
+            Slog.i(TAG, "disabled");
         }
         mState = STATE_IDLE;
     }
@@ -93,15 +96,21 @@ final class ThreeFingerSwipeListener {
                 mState = STATE_IDLE;
                 break;
             case MotionEvent.ACTION_POINTER_DOWN:
+                if (event.getPointerCount() >= 2) {
+                    Slog.d(TAG, "pointer down: " + event.getPointerCount() + " pointers, state "
+                            + mState);
+                }
                 if (mState == STATE_IDLE && event.getPointerCount() == 3) {
                     startTracking(event);
                 } else if (mState == STATE_TRACKING) {
                     // A fourth finger.
+                    Slog.d(TAG, "ignored: a fourth finger");
                     mState = STATE_DONE;
                 }
                 break;
             case MotionEvent.ACTION_POINTER_UP:
                 if (mState == STATE_TRACKING) {
+                    Slog.d(TAG, "ignored: a finger lifted before the swipe completed");
                     mState = STATE_DONE;
                 }
                 break;
@@ -115,7 +124,9 @@ final class ThreeFingerSwipeListener {
 
     private void startTracking(MotionEvent event) {
         mState = STATE_DONE;
-        if (event.getEventTime() - event.getDownTime() > MAX_LANDING_SPREAD_MS) {
+        final long landing = event.getEventTime() - event.getDownTime();
+        if (landing > MAX_LANDING_SPREAD_MS) {
+            Slog.d(TAG, "ignored: fingers landed " + landing + " ms apart");
             return;
         }
         float minY = Float.MAX_VALUE;
@@ -127,10 +138,12 @@ final class ThreeFingerSwipeListener {
             maxY = Math.max(maxY, mStartY[i]);
         }
         if (maxY - minY > mMaxStartSpread) {
+            Slog.d(TAG, "ignored: fingers " + (maxY - minY) + " px apart vertically");
             return;
         }
         mState = STATE_TRACKING;
         mInputMonitor.pilferPointers();
+        Slog.d(TAG, "tracking");
     }
 
     private void track(MotionEvent event) {
@@ -138,6 +151,7 @@ final class ThreeFingerSwipeListener {
         for (int i = 0; i < 3; i++) {
             final int index = event.findPointerIndex(mPointerIds[i]);
             if (index < 0) {
+                Slog.d(TAG, "ignored: pointer " + mPointerIds[i] + " missing from the move");
                 mState = STATE_DONE;
                 return;
             }
@@ -145,6 +159,7 @@ final class ThreeFingerSwipeListener {
         }
         if (travel >= mSwipeDistance) {
             mState = STATE_DONE;
+            Slog.i(TAG, "swipe: taking a screenshot");
             mOnSwipe.run();
         }
     }
