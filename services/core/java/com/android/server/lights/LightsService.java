@@ -69,6 +69,9 @@ public class LightsService extends SystemService {
     static final String TAG = "LightsService";
     static final boolean DEBUG = false;
 
+    /** Backlight level sent in flashOnMs for brightness 1.0, see config_backlightHighPrecision. */
+    private static final int BACKLIGHT_HIGH_PRECISION_MAX = 65535;
+
     // Priority for the system override session, higher than typical app priorities.
     static final int DEFAULT_SYSTEM_SESSION_PRIORITY = 1_000;
 
@@ -615,6 +618,9 @@ public class LightsService extends SystemService {
 
         private LightImpl(Context context, HwLight hwLight) {
             mHwLight = hwLight;
+            mBacklightHighPrecision = hwLight.type == LightsManager.LIGHT_ID_BACKLIGHT
+                    && context.getResources().getBoolean(
+                            com.android.internal.R.bool.config_backlightHighPrecision);
         }
 
         /**
@@ -676,7 +682,13 @@ public class LightsService extends SystemService {
                 int brightnessInt = BrightnessSynchronizer.brightnessFloatToInt(brightness);
                 int color = brightnessInt & 0x000000ff;
                 color = 0xff000000 | (color << 16) | (color << 8) | color;
-                setLightLocked(color, LIGHT_FLASH_NONE, 0, 0, brightnessMode);
+                // See config_backlightHighPrecision: the unrounded level rides in flashOnMs.
+                int level = 0;
+                if (mBacklightHighPrecision && brightnessInt > 0) {
+                    level = Math.max(1, Math.round(
+                            Math.min(brightness, 1.0f) * BACKLIGHT_HIGH_PRECISION_MAX));
+                }
+                setLightLocked(color, LIGHT_FLASH_NONE, level, 0, brightnessMode);
             }
         }
 
@@ -905,6 +917,7 @@ public class LightsService extends SystemService {
         private boolean mMuted;
         private boolean mLocked;
         private boolean mModesUpdate;
+        private final boolean mBacklightHighPrecision;
     }
 
     public LightsService(Context context) {
