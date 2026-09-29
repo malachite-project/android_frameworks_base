@@ -432,7 +432,6 @@ public class SettingsProvider extends ContentProvider {
                         Context.DEVICE_ID_DEFAULT);
             }
             mSettingsRegistry.syncSsaidTableOnStartLocked();
-            updateDefaultDeviceNameLocked();
         }
         handler.post(() -> {
             registerBroadcastReceivers();
@@ -441,30 +440,6 @@ public class SettingsProvider extends ContentProvider {
         ServiceManager.addService("settings", new SettingsService(this));
         ServiceManager.addService("device_config", new DeviceConfigService(this));
         return true;
-    }
-
-    /**
-     * Names the device after its market name ("POCO X7") when the stored name is still the old
-     * default, Build.MODEL ("24095PCADG"), so settings kept across an update get it too. A name
-     * the user chose is left alone.
-     */
-    @GuardedBy("mLock")
-    private void updateDefaultDeviceNameLocked() {
-        final String marketName = SystemProperties.get("ro.product.marketname");
-        if (TextUtils.isEmpty(marketName) || marketName.equals(Build.MODEL)) {
-            return;
-        }
-        final SettingsState globalSettings = mSettingsRegistry.getSettingsLocked(
-                SETTINGS_TYPE_GLOBAL, UserHandle.USER_SYSTEM, Context.DEVICE_ID_DEFAULT);
-        if (globalSettings == null) {
-            return;
-        }
-        final Setting deviceName = globalSettings.getSettingLocked(Settings.Global.DEVICE_NAME);
-        if (deviceName.isNull() || !Build.MODEL.equals(deviceName.getValue())) {
-            return;
-        }
-        globalSettings.insertSettingLocked(Settings.Global.DEVICE_NAME, marketName, null, true,
-                SettingsState.SYSTEM_PACKAGE_NAME);
     }
 
     @Override
