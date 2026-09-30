@@ -6,16 +6,21 @@
 package com.android.server.policy;
 
 import android.content.Context;
+import android.hardware.display.DisplayManagerInternal;
 import android.hardware.input.InputManager;
 import android.os.Looper;
+import android.util.DisplayMetrics;
 import android.util.Slog;
 import android.view.Display;
+import android.view.DisplayInfo;
 import android.view.InputChannel;
 import android.view.InputDevice;
 import android.view.InputEvent;
 import android.view.InputEventReceiver;
 import android.view.InputMonitor;
 import android.view.MotionEvent;
+
+import com.android.server.LocalServices;
 
 /**
  * Detects three fingers swiping down together on the default display.
@@ -27,6 +32,12 @@ import android.view.MotionEvent;
  * <p>Fingers rarely land at once: a longer finger touches first and often starts moving before
  * the others arrive. Each finger is therefore measured from where it landed, not from where it
  * was when the third finger landed.
+ *
+ * <p>Distances are in dp of the default display, read when three fingers land. The listener is
+ * created early in boot, when the system context still reports the 160 dpi default (this device
+ * sets no ro.sf.lcd_density), and the Display size setting can change the density later.
+ *
+ * <p>Decisions are logged at info level: testers' phones often keep only info and above.
  *
  * <p>All methods, and the callback, run on the looper passed to the constructor.
  */
@@ -52,9 +63,12 @@ final class ThreeFingerSwipeListener {
     private final Context mContext;
     private final Looper mLooper;
     private final Runnable mOnSwipe;
-    private final float mMaxStartSpread;
-    private final float mSwipeDistance;
-    private final float mMinFingerTravel;
+    /** In pixels, for the density when the current gesture started. */
+    private float mSwipeDistance;
+    private float mMinFingerTravel;
+    /** The last measured travel, for the log when a gesture is given up. */
+    private float mTravel;
+    private float mMinTravel;
 
     private InputMonitor mInputMonitor;
     private InputEventReceiver mReceiver;
@@ -69,11 +83,18 @@ final class ThreeFingerSwipeListener {
         mContext = context;
         mLooper = looper;
         mOnSwipe = onSwipe;
-        final float density = context.getResources().getDisplayMetrics().density;
-        mMaxStartSpread = MAX_START_SPREAD_DP * density;
-        // Compared against the travel of all three fingers added together.
-        mSwipeDistance = SWIPE_DISTANCE_DP * density * 3;
-        mMinFingerTravel = MIN_FINGER_TRAVEL_DP * density;
+    }
+
+    /** Pixels per dp on the default display now. */
+    private float density() {
+        final DisplayManagerInternal displayManager =
+                LocalServices.getService(DisplayManagerInternal.class);
+        final DisplayInfo info = displayManager == null
+                ? null : displayManager.getDisplayInfo(Display.DEFAULT_DISPLAY);
+        if (info != null && info.logicalDensityDpi > 0) {
+            return info.logicalDensityDpi / (float) DisplayMetrics.DENSITY_DEFAULT;
+        }
+        return mContext.getResources().getDisplayMetrics().density;
     }
 
     void setEnabled(boolean enabled) {
@@ -90,9 +111,9 @@ final class ThreeFingerSwipeListener {
             }
             mReceiver = new Receiver(mInputMonitor.getInputChannel(), mLooper);
             Slog.i(TAG, "enabled: landing within " + MAX_LANDING_SPREAD_MS + " ms and "
-                    + mMaxStartSpread + " px, swipe " + mSwipeDistance
-                    + " px (three fingers together), at least " + mMinFingerTravel
-                    + " px each");
+                    + MAX_START_SPREAD_DP + " dp, swipe " + SWIPE_DISTANCE_DP
+                    + " dp per finger on average, at least " + MIN_FINGER_TRAVEL_DP
+                    + " dp each; now " + density() + " px per dp");
         } else {
             mReceiver.dispose();
             mReceiver = null;
@@ -111,6 +132,10 @@ final class ThreeFingerSwipeListener {
                 break;
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL:
+                if (mState == STATE_TRACKING) {
+                    Slog.i(TAG, "ignored: the touch ended before the swipe completed"
+                            + progress());
+                }
                 mState = STATE_IDLE;
                 break;
             case MotionEvent.ACTION_POINTER_DOWN:
@@ -123,13 +148,14 @@ final class ThreeFingerSwipeListener {
                     startTracking(event);
                 } else if (mState == STATE_TRACKING) {
                     // A fourth finger.
-                    Slog.d(TAG, "ignored: a fourth finger");
+                    Slog.i(TAG, "ignored: a fourth finger" + progress());
                     mState = STATE_DONE;
                 }
                 break;
             case MotionEvent.ACTION_POINTER_UP:
                 if (mState == STATE_TRACKING) {
-                    Slog.d(TAG, "ignored: a finger lifted before the swipe completed");
+                    Slog.i(TAG, "ignored: a finger lifted before the swipe completed"
+                            + progress());
                     mState = STATE_DONE;
                 }
                 break;
@@ -150,15 +176,27 @@ final class ThreeFingerSwipeListener {
         }
     }
 
+    private String progress() {
+        return " (" + mTravel + " of " + mSwipeDistance + " px, least " + mMinTravel + " of "
+                + mMinFingerTravel + " px)";
+    }
+
     private void startTracking(MotionEvent event) {
         mState = STATE_DONE;
+        final float density = density();
+        final float maxStartSpread = MAX_START_SPREAD_DP * density;
+        // Compared against the travel of all three fingers added together.
+        mSwipeDistance = SWIPE_DISTANCE_DP * density * 3;
+        mMinFingerTravel = MIN_FINGER_TRAVEL_DP * density;
+        mTravel = 0;
+        mMinTravel = 0;
         long firstLanding = Long.MAX_VALUE;
         float minY = Float.MAX_VALUE;
         float maxY = -Float.MAX_VALUE;
         for (int i = 0; i < 3; i++) {
             final int id = event.getPointerId(i);
             if (id < 0 || id >= MAX_POINTER_IDS) {
-                Slog.d(TAG, "ignored: pointer id " + id);
+                Slog.i(TAG, "ignored: pointer id " + id);
                 return;
             }
             mPointerIds[i] = id;
@@ -168,16 +206,19 @@ final class ThreeFingerSwipeListener {
         }
         final long landing = event.getEventTime() - firstLanding;
         if (landing > MAX_LANDING_SPREAD_MS) {
-            Slog.d(TAG, "ignored: fingers landed " + landing + " ms apart");
+            Slog.i(TAG, "ignored: fingers landed " + landing + " ms apart (limit "
+                    + MAX_LANDING_SPREAD_MS + " ms)");
             return;
         }
-        if (maxY - minY > mMaxStartSpread) {
-            Slog.d(TAG, "ignored: fingers landed " + (maxY - minY) + " px apart vertically");
+        if (maxY - minY > maxStartSpread) {
+            Slog.i(TAG, "ignored: fingers landed " + (maxY - minY) + " px apart vertically (limit "
+                    + maxStartSpread + " px at " + density + " px per dp)");
             return;
         }
         mState = STATE_TRACKING;
         mInputMonitor.pilferPointers();
-        Slog.d(TAG, "tracking: landed within " + landing + " ms and " + (maxY - minY) + " px");
+        Slog.i(TAG, "tracking: landed within " + landing + " ms and " + (maxY - minY) + " px"
+                + " (limit " + maxStartSpread + " px at " + density + " px per dp)");
         // The first finger may already have moved far enough.
         track(event);
     }
@@ -189,7 +230,7 @@ final class ThreeFingerSwipeListener {
             final int id = mPointerIds[i];
             final int index = event.findPointerIndex(id);
             if (index < 0) {
-                Slog.d(TAG, "ignored: pointer " + id + " missing from the move");
+                Slog.i(TAG, "ignored: pointer " + id + " missing from the move" + progress());
                 mState = STATE_DONE;
                 return;
             }
@@ -197,6 +238,8 @@ final class ThreeFingerSwipeListener {
             travel += fingerTravel;
             minTravel = Math.min(minTravel, fingerTravel);
         }
+        mTravel = travel;
+        mMinTravel = minTravel;
         if (travel >= mSwipeDistance && minTravel >= mMinFingerTravel) {
             mState = STATE_DONE;
             Slog.i(TAG, "swipe: taking a screenshot (" + travel + " px, least "
