@@ -386,7 +386,7 @@ class ScreenshotAnimationController(
     companion object {
         private const val TAG = "ScreenshotAnimationController"
         private const val SCREENSHOT_FLASH_ENABLED_SETTING = "screenshot_flash_enabled"
-        private const val SCREENSHOT_FLASH_ENABLED_DEFAULT = 1
+        private const val SCREENSHOT_FLASH_ENABLED_DEFAULT = 0
         private const val MINIMUM_VELOCITY = 1.5f // pixels per millisecond
         private const val FLASH_IN_DURATION_MS: Long = 133
         private const val FLASH_OUT_DURATION_MS: Long = 217
