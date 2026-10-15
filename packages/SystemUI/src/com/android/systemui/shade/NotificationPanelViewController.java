@@ -1600,6 +1600,7 @@ public final class NotificationPanelViewController implements
             mDownY = event.getY();
             mCollapsedOnDown = isFullyCollapsed();
             mQsController.setCollapsedOnDown(mCollapsedOnDown);
+            mQsController.onGestureDown(event);
             mIsPanelCollapseOnQQS = mQsController.canPanelCollapseOnQQS(mDownX, mDownY);
             mListenForHeadsUp = mCollapsedOnDown && mHeadsUpManager.hasPinnedHeadsUp();
             mAllowExpandForSmallExpansion = mExpectingSynthesizedDown;
