@@ -244,6 +244,12 @@ public class QuickSettingsControllerImpl implements QuickSettingsController, Dum
      * It needs to be set when movement starts as it resets at the end of expansion/collapse.
      */
     private boolean mTwoFingerExpandPossible;
+    /** Where the current gesture went down, also when this controller didn't get the down. */
+    private long mGestureDownTime = -1;
+    private float mGestureDownX;
+    private float mGestureDownY;
+    /** Down time of the last gesture that already opened QS through the quick pulldown. */
+    private long mPulldownDownTime = -1;
     /** Whether the ongoing gesture might both trigger the expansion in both the view and QS. */
     private boolean mConflictingExpansionGesture;
     /**
@@ -623,8 +629,14 @@ public class QuickSettingsControllerImpl implements QuickSettingsController, Dum
                         MotionEvent.BUTTON_SECONDARY) || event.isButtonPressed(
                         MotionEvent.BUTTON_TERTIARY));
 
+        final boolean showQsOverride = isOneFingerPulldownAt(event.getX());
+
+        return twoFingerDrag || showQsOverride || stylusButtonClickDrag || mouseButtonClickDrag;
+    }
+
+    /** Returns whether a one-finger swipe down starting at x opens QS right away. */
+    private boolean isOneFingerPulldownAt(float x) {
         final float w = mQs.getView().getMeasuredWidth();
-        final float x = event.getX();
         float region = w * 1.f / 4.f; // TODO overlay region fraction?
         boolean showQsOverride = false;
 
@@ -636,9 +648,17 @@ public class QuickSettingsControllerImpl implements QuickSettingsController, Dum
                 showQsOverride = mQs.getView().isLayoutRtl() ? w - region < x : x < region;
                 break;
         }
-        showQsOverride &= mBarState == StatusBarState.SHADE;
+        return showQsOverride && mBarState == StatusBarState.SHADE;
+    }
 
-        return twoFingerDrag || showQsOverride || stylusButtonClickDrag || mouseButtonClickDrag;
+    /**
+     * Records where a gesture went down. The shade sees every down event while it decides
+     * whether to intercept a status bar gesture, also when a status bar view takes the down.
+     */
+    void onGestureDown(MotionEvent event) {
+        mGestureDownTime = event.getDownTime();
+        mGestureDownX = event.getX();
+        mGestureDownY = event.getY();
     }
 
     @Override
@@ -1733,18 +1753,35 @@ public class QuickSettingsControllerImpl implements QuickSettingsController, Dum
             mTwoFingerExpandPossible = true;
         }
         if (mTwoFingerExpandPossible && isOpenQsEvent(event) && isInStatusBar) {
-            mMetricsLogger.count(COUNTER_PANEL_OPEN_QS, 1);
-            setExpandImmediate(true);
-            mNotificationStackScrollLayoutController.setShouldShowShelfOnly(!mSplitShadeEnabled);
-            if (mExpansionHeightSetToMaxListener != null) {
-                mExpansionHeightSetToMaxListener.onExpansionHeightSetToMax(false);
-            }
-
-            // Normally, we start listening when the panel is expanded, but here we need to start
-            // earlier so the state is already up to date when dragging down.
-            setListening(true);
+            mPulldownDownTime = event.getDownTime();
+            expandImmediately();
+        } else if (action == MotionEvent.ACTION_MOVE && mCollapsedOnDown && expansionEnabled
+                && !isExpandImmediate() && event.getPointerCount() == 1
+                && event.getDownTime() == mGestureDownTime
+                && event.getDownTime() != mPulldownDownTime
+                && mGestureDownY < mStatusBarMinHeight
+                && isOneFingerPulldownAt(mGestureDownX)) {
+            // A status bar view that takes touches (clock, icons, chips) got the down event,
+            // and the status bar hands the gesture over only once it passes the touch slop,
+            // starting with a move. Decide the one-finger pulldown from where it went down.
+            mShadeLog.logMotionEvent(event, "handleQsTouch: one-finger pulldown without down");
+            mPulldownDownTime = event.getDownTime();
+            expandImmediately();
         }
         return false;
+    }
+
+    private void expandImmediately() {
+        mMetricsLogger.count(COUNTER_PANEL_OPEN_QS, 1);
+        setExpandImmediate(true);
+        mNotificationStackScrollLayoutController.setShouldShowShelfOnly(!mSplitShadeEnabled);
+        if (mExpansionHeightSetToMaxListener != null) {
+            mExpansionHeightSetToMaxListener.onExpansionHeightSetToMax(false);
+        }
+
+        // Normally, we start listening when the panel is expanded, but here we need to start
+        // earlier so the state is already up to date when dragging down.
+        setListening(true);
     }
 
     private void handleDown(MotionEvent event) {
