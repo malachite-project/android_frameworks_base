@@ -33,6 +33,7 @@
 #include <ui/Fence.h>
 
 #if defined(MTK_FPSGO) && defined(__ANDROID__)
+#include <errno.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 #endif
@@ -106,11 +107,17 @@ static void fpsgoNotifySwapBuffer() {
         uint64_t identifier;
     };
     static_assert(sizeof(FpsgoPackage) == 40, "must match the kernel's _FPSGO_PACKAGE");
-    static const int fd = open("/proc/perfmgr/perf_ioctl", O_RDONLY | O_CLOEXEC);
+    // Only RenderThreads call this, so the process-wide state needs no lock.
+    static int fd = open("/proc/perfmgr/perf_ioctl", O_RDONLY | O_CLOEXEC);
     if (fd < 0) return;
     FpsgoPackage package = {};
     package.tid = static_cast<uint32_t>(gettid());
-    ioctl(fd, _IOW('g', 14, FpsgoPackage), &package);
+    if (ioctl(fd, _IOW('g', 14, FpsgoPackage), &package) < 0 &&
+        (errno == EACCES || errno == EPERM || errno == ENOTTY)) {
+        // Refused for good (policy or an unknown command): stop trying.
+        close(fd);
+        fd = -1;
+    }
 }
 #endif
 
