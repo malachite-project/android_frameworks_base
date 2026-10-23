@@ -1610,11 +1610,6 @@
          The user is forbidden from setting the brightness below this level. -->
     <item name="config_screenBrightnessSettingMinimumFloat" format="float" type="dimen">-2</item>
 
-    <!-- Brightness ramp rate, in the same units as the display configuration's ramps, for
-         changes that only move the HDR brightness (an HDR layer appears or disappears while
-         the SDR brightness stays). 0 uses the normal ramps. -->
-    <item name="config_brightnessRampRateHdrOnly" format="float" type="dimen">0</item>
-
     <!-- Maximum screen brightness allowed by the power manager.
          -2 is invalid so setting will resort to int value specified above.
          Set this to 1.0 for maximum brightness range.

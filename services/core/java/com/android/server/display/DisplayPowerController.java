@@ -420,9 +420,6 @@ final class DisplayPowerController implements AutomaticBrightnessController.Call
     private float mBrightnessRampRateSlowIncrease;
     private float mBrightnessRampRateSlowDecreaseIdle;
     private float mBrightnessRampRateSlowIncreaseIdle;
-    // Rate for changes that only move the HDR brightness (SDR unchanged); 0 uses the normal
-    // ramps. config_brightnessRampRateHdrOnly.
-    private float mBrightnessRampRateHdrOnly;
 
     // Report HBM brightness change to StatsD
     private int mDisplayStatsId;
@@ -1218,8 +1215,6 @@ final class DisplayPowerController implements AutomaticBrightnessController.Call
     }
 
     private void loadBrightnessRampRates() {
-        mBrightnessRampRateHdrOnly = mContext.getResources().getFloat(
-                com.android.internal.R.dimen.config_brightnessRampRateHdrOnly);
         mBrightnessRampRateFastDecrease = mDisplayDeviceConfig.getBrightnessRampFastDecrease();
         mBrightnessRampRateFastIncrease = mDisplayDeviceConfig.getBrightnessRampFastIncrease();
         mBrightnessRampRateSlowDecrease = mDisplayDeviceConfig.getBrightnessRampSlowDecrease();
@@ -1755,13 +1750,6 @@ final class DisplayPowerController implements AutomaticBrightnessController.Call
                     // but this requires display support and would need an entry in the
                     // display configuration. For now just do the fast animation
                     slowChange = false;
-                }
-                if (!skipAnimation && isHdrOnlyChange && customAnimationRate <= 0
-                        && mBrightnessRampRateHdrOnly > 0) {
-                    // Entering or leaving HDR headroom: on displays whose backlight change
-                    // does not land on the same frame as SurfaceFlinger's SDR dimming, a fast
-                    // ramp shows as a flash. Small steps hide the mismatch.
-                    customAnimationRate = mBrightnessRampRateHdrOnly;
                 }
                 if (skipAnimation) {
                     animateScreenBrightness(animateValue, sdrAnimateValue,
