@@ -32,6 +32,11 @@
 #include <sys/stat.h>
 #include <ui/Fence.h>
 
+#if defined(MTK_FPSGO) && defined(__ANDROID__)
+#include <sys/ioctl.h>
+#include <unistd.h>
+#endif
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
@@ -84,6 +89,30 @@ private:
 
 CanvasContext* ScopedActiveContext::sActiveContext = nullptr;
 } /* namespace */
+
+#if defined(MTK_FPSGO) && defined(__ANDROID__)
+// MediaTek's FPSGO treats a queue as HWUI's, and leaves it to HWUI's own
+// hint session, only while the RenderThread reports its swaps with
+// FPSGO_SWAP_BUFFER, as MediaTek's HWUI does; the vendor policy grants apps
+// this ioctl. Untagged, every RenderThread queue would come under FPSGO's
+// game control alongside the game. Layout: _FPSGO_PACKAGE in perf_ioctl.h.
+static void fpsgoNotifySwapBuffer() {
+    struct FpsgoPackage {
+        uint32_t tid;
+        uint32_t start;
+        uint64_t bufID;
+        uint64_t frameId;
+        int32_t queueSF;
+        uint64_t identifier;
+    };
+    static_assert(sizeof(FpsgoPackage) == 40, "must match the kernel's _FPSGO_PACKAGE");
+    static const int fd = open("/proc/perfmgr/perf_ioctl", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return;
+    FpsgoPackage package = {};
+    package.tid = static_cast<uint32_t>(gettid());
+    ioctl(fd, _IOW('g', 14, FpsgoPackage), &package);
+}
+#endif
 
 CanvasContext* CanvasContext::create(RenderThread& thread, bool translucent,
                                      RenderNode* rootRenderNode, IContextFactory* contextFactory,
@@ -783,6 +812,9 @@ void CanvasContext::draw(bool solelyTextureViewUpdates) {
     bool requireSwap = false;
     bool didDraw = false;
 
+#if defined(MTK_FPSGO) && defined(__ANDROID__)
+    fpsgoNotifySwapBuffer();
+#endif
     int error = OK;
     bool didSwap = mRenderPipeline->swapBuffers(frame, drawResult, windowDirty, mCurrentFrameInfo,
                                                 &requireSwap);
