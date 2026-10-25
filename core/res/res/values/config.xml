@@ -1651,6 +1651,23 @@
          brightness value and will repeat for the following ramp if autobrightness is enabled. -->
     <bool name="config_skipScreenOnBrightnessRamp">false</bool>
 
+    <!-- Fixed durations, in milliseconds, for brightness ramps the user starts or watches,
+         instead of the constant ramp rate. Brightening keeps e^b linear in time and darkening
+         is exponential, with b the brightness linear in nits (b = 1 at full brightness).
+         A new target restarts the duration from the current brightness. 0 keeps the ramp
+         rate for that case. Auto-brightness changes keep their ramp rates. -->
+    <!-- Into and out of the dim policy. -->
+    <integer name="config_brightnessRampDimDurationMillis">0</integer>
+    <!-- While the brightness slider is dragged, and on release within this time of its last
+         move. -->
+    <integer name="config_brightnessRampTemporaryDurationMillis">0</integer>
+    <!-- A window brightness override applied, changed or removed. -->
+    <integer name="config_brightnessRampOverrideDurationMillis">0</integer>
+    <!-- HDR content appearing or going away, or only the HDR level changing. -->
+    <integer name="config_brightnessRampHdrDurationMillis">0</integer>
+    <!-- Any other change that is not slow: brightness keys, quick settings, settings. -->
+    <integer name="config_brightnessRampManualDurationMillis">0</integer>
+
     <!-- Whether or not to skip a color fade transition to black when the display transitions to
          STATE_OFF. Setting this to true will skip the color fade transition. -->
     <bool name="config_skipScreenOffTransition">false</bool>
