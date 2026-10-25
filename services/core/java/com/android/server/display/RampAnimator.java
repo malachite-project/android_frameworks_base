@@ -20,6 +20,7 @@ import static com.android.server.display.BrightnessMappingStrategy.INVALID_LUX;
 
 import android.animation.ValueAnimator;
 import android.util.FloatProperty;
+import android.util.MathUtils;
 import android.util.Spline;
 import android.view.Choreographer;
 import android.view.Choreographer.VsyncCallback;
@@ -33,6 +34,10 @@ import com.android.internal.display.BrightnessUtils;
  * a given variable rate until it reaches a particular target value.
  * The ramping at the given rate is done in the perceptual space using
  * the HLG transfer functions.
+ *
+ * In timed mode ({@link #setAnimationTargetWithDuration}) the value instead follows a curve
+ * from where it is to the target over a fixed duration, in the space and with the curve of a
+ * {@link TimedRamp}.
  */
 class RampAnimator<T> {
     private final T mObject;
@@ -68,6 +73,19 @@ class RampAnimator<T> {
     private long mLastFrameTimeNanos;
 
     private boolean mFirstTime = true;
+
+    // linear value last given to the property
+    private float mCurrentLinearValue;
+
+    // timed mode, see setAnimationTargetWithDuration()
+    private boolean mTimed;
+    private TimedRamp mTimedRamp;
+    private float mTimedStartRampValue;
+    private float mTimedTargetRampValue;
+    private float mTimedStartError;
+    private float mTimedTargetError;
+    private long mTimedStartTimeNanos;
+    private long mTimedDurationNanos;
 
     RampAnimator(T object, FloatProperty<T> property) {
         this(object, property, System::nanoTime);
@@ -148,6 +166,12 @@ class RampAnimator<T> {
             target = BrightnessUtils.convertLinearToGamma(targetLinear);
         }
 
+        if (mTimed) {
+            // Leave the timed ramp: continue from where it is now at the given rate.
+            mTimed = false;
+            mAnimating = false;
+        }
+
         // Immediately jump to the target the first time.
         if (mFirstTime || rate <= 0) {
             if (mFirstTime || target != mCurrentValue) {
@@ -201,6 +225,55 @@ class RampAnimator<T> {
     }
 
     /**
+     * Sets the animation target and ramps to it in the given time, following the curve of
+     * {@code timedRamp} from the current value. A new target restarts the full duration from
+     * where the value is; the same target again keeps the ramp in progress.
+     * If this is the first time the property is being set or if the duration is 0,
+     * the value jumps directly to the target.
+     *
+     * @param targetLinear The target value.
+     * @param durationMillis The ramp duration, scaled by the animator duration scale.
+     * @param timedRamp The ramp space and curve.
+     * @return True if the target differs from the previous target.
+     */
+    boolean setAnimationTargetWithDuration(float targetLinear, long durationMillis,
+            TimedRamp timedRamp) {
+        if (mFirstTime || durationMillis <= 0) {
+            return setAnimationTarget(targetLinear, /* rate= */ 0,
+                    /* ignoreAnimationLimits= */ true);
+        }
+        if (mTimed && mAnimating && targetLinear == mTargetLinearValue) {
+            return false;
+        }
+
+        final float target = BrightnessUtils.convertLinearToGamma(targetLinear);
+        final boolean changed = (mTargetHlgValue != target);
+        mTargetHlgValue = target;
+        mTargetLinearValue = targetLinear;
+
+        if (targetLinear == mCurrentLinearValue) {
+            // Already there.
+            mTimed = false;
+            mAnimating = false;
+            mCurrentValue = target;
+            return changed;
+        }
+
+        // The errors make the curve start and end exactly on the linear values even when
+        // the ramp space conversion does not round-trip exactly.
+        mTimed = true;
+        mTimedRamp = timedRamp;
+        mTimedStartRampValue = timedRamp.toRampSpace(mCurrentLinearValue);
+        mTimedTargetRampValue = timedRamp.toRampSpace(targetLinear);
+        mTimedStartError = mCurrentLinearValue - timedRamp.fromRampSpace(mTimedStartRampValue);
+        mTimedTargetError = targetLinear - timedRamp.fromRampSpace(mTimedTargetRampValue);
+        mTimedStartTimeNanos = mClock.nanoTime();
+        mTimedDurationNanos = durationMillis * 1_000_000L;
+        mAnimating = true;
+        return changed;
+    }
+
+    /**
      * Returns true if the animation is running.
      */
     boolean isAnimating() {
@@ -220,10 +293,15 @@ class RampAnimator<T> {
         // To avoid linearVal inconsistency when converting to HLG and back to linear space
         // used original target linear value for final animation step
         float linearVal = val == mTargetHlgValue ? mTargetLinearValue : newValue;
+        mCurrentLinearValue = linearVal;
         mProperty.setValue(mObject, linearVal);
     }
 
     void performNextAnimationStep(long frameTimeNanos) {
+        if (mTimed) {
+            performNextTimedStep(frameTimeNanos);
+            return;
+        }
         final float timeDelta = (frameTimeNanos - mLastFrameTimeNanos) * 0.000000001f;
         mLastFrameTimeNanos = frameTimeNanos;
 
@@ -253,8 +331,56 @@ class RampAnimator<T> {
         }
     }
 
+    private void performNextTimedStep(long frameTimeNanos) {
+        final float scale = ValueAnimator.getDurationScale();
+        final float fraction;
+        if (scale == 0) {
+            // Animation off.
+            fraction = 1;
+        } else {
+            fraction = MathUtils.constrain((frameTimeNanos - mTimedStartTimeNanos)
+                    / (mTimedDurationNanos * scale), 0, 1);
+        }
+
+        final float linearVal;
+        if (fraction >= 1) {
+            linearVal = mTargetLinearValue;
+            mCurrentValue = mTargetHlgValue;
+            mTimed = false;
+            mAnimating = false;
+        } else {
+            final float rampVal = mTimedRamp.valueAt(mTimedStartRampValue,
+                    mTimedTargetRampValue, fraction);
+            linearVal = mTimedRamp.fromRampSpace(rampVal)
+                    + (1 - fraction) * mTimedStartError + fraction * mTimedTargetError;
+            mCurrentValue = BrightnessUtils.convertLinearToGamma(linearVal);
+        }
+        // Keep the HLG copy in step so a rate-based ramp can take over from here.
+        mAnimatedValue = mCurrentValue;
+        mLastFrameTimeNanos = frameTimeNanos;
+        if (linearVal != mCurrentLinearValue) {
+            mCurrentLinearValue = linearVal;
+            mProperty.setValue(mObject, linearVal);
+        }
+    }
+
     public interface Listener {
         void onAnimationEnd();
+    }
+
+    /** The space and curve of a timed ramp. */
+    interface TimedRamp {
+        /** Converts a linear brightness value into the ramp space. */
+        float toRampSpace(float linear);
+
+        /** Converts a ramp space value back into a linear brightness value. */
+        float fromRampSpace(float value);
+
+        /**
+         * Returns the ramp space value at {@code fraction} (0..1) of the way from start to
+         * target.
+         */
+        float valueAt(float start, float target, float fraction);
     }
 
     interface Clock {
@@ -330,6 +456,37 @@ class RampAnimator<T> {
                     postAnimationCallback();
                 } else if (mAwaitingCallback) {
                     mChoreographer.removeVsyncCallback(mAnimationCallback);
+                    mAwaitingCallback = false;
+                }
+            }
+            return animationTargetChanged;
+        }
+
+        /**
+         * Starts animating towards the specified values in the given time, see
+         * {@link RampAnimator#setAnimationTargetWithDuration}.
+         *
+         * @param linearFirstTarget The first target value in linear space.
+         * @param linearSecondTarget The second target value in linear space.
+         * @param durationMillis The ramp duration, or 0 to set the values immediately.
+         * @param timedRamp The ramp space and curve.
+         * @return True if either target differs from the previous target.
+         */
+        public boolean animateToWithDuration(float linearFirstTarget, float linearSecondTarget,
+                long durationMillis, TimedRamp timedRamp) {
+            boolean animationTargetChanged = mFirst.setAnimationTargetWithDuration(
+                    linearFirstTarget, durationMillis, timedRamp);
+            animationTargetChanged |= mSecond.setAnimationTargetWithDuration(
+                    linearSecondTarget, durationMillis, timedRamp);
+            boolean shouldBeAnimating = isAnimating();
+
+            if (shouldBeAnimating != mAwaitingCallback) {
+                if (shouldBeAnimating) {
+                    mAwaitingCallback = true;
+                    postAnimationCallback();
+                } else if (mAwaitingCallback) {
+                    mChoreographer.removeCallbacks(Choreographer.CALLBACK_ANIMATION,
+                            mAnimationCallback, null);
                     mAwaitingCallback = false;
                 }
             }
