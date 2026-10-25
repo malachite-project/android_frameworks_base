@@ -444,6 +444,10 @@ final class DisplayPowerController implements AutomaticBrightnessController.Call
     private ObjectAnimator mColorFadeOffAnimator;
     private DualRampAnimator<DisplayPowerState> mScreenBrightnessRampAnimator;
 
+    // Fixed ramp durations for HDR, slider, keys, override and dim; null when not configured.
+    @Nullable
+    private final BrightnessRampDurationController mBrightnessRampDurationController;
+
     // True if this DisplayPowerController has been stopped and should no longer be running.
     private boolean mStopped;
 
@@ -557,6 +561,8 @@ final class DisplayPowerController implements AutomaticBrightnessController.Call
         mScreenBrightnessDozeConfig = BrightnessUtils.clampAbsoluteBrightness(
                 mDisplayDeviceConfig.getDefaultDozeBrightness());
         loadBrightnessRampRates();
+        mBrightnessRampDurationController = BrightnessRampDurationController.create(resources,
+                mDisplayDeviceConfig);
         mSkipScreenOnBrightnessRamp = resources.getBoolean(
                 R.bool.config_skipScreenOnBrightnessRamp);
         mDozeScaleFactor = resources.getFraction(
@@ -950,6 +956,9 @@ final class DisplayPowerController implements AutomaticBrightnessController.Call
                 mDisplayDeviceConfig.getDefaultDozeBrightness());
         loadBrightnessRampRates();
         loadAmbientLightSensor();
+        if (mBrightnessRampDurationController != null) {
+            mBrightnessRampDurationController.setDisplayDeviceConfig(mDisplayDeviceConfig);
+        }
         loadNitsRange(mContext.getResources());
 
         setUpDisplayBrightnessReporter();
@@ -1259,6 +1268,9 @@ final class DisplayPowerController implements AutomaticBrightnessController.Call
     private final RampAnimator.Listener mRampAnimatorListener = new RampAnimator.Listener() {
         @Override
         public void onAnimationEnd() {
+            if (mBrightnessRampDurationController != null) {
+                mBrightnessRampDurationController.onAnimationEnd();
+            }
             sendUpdatePowerState();
             Message msg = mHandler.obtainMessage(MSG_BRIGHTNESS_RAMP_DONE);
             mHandler.sendMessageAtTime(msg, mClock.uptimeMillis());
@@ -1570,6 +1582,20 @@ final class DisplayPowerController implements AutomaticBrightnessController.Call
             final float currentBrightness = mPowerState.getScreenBrightness();
             final float currentSdrBrightness = mPowerState.getSdrScreenBrightness();
 
+            // Fixed-duration ramp for this change, if the device configures one. It never
+            // overrides the jumps for screen-on, doze buckets or a hidden screen.
+            long rampDurationMillis = 0;
+            if (mBrightnessRampDurationController != null) {
+                rampDurationMillis = mBrightnessRampDurationController.update(
+                        mPowerRequest.policy, mBrightnessReasonTemp, brightnessIsTemporary,
+                        slowChange, customAnimationRate > 0, animateValue, sdrAnimateValue,
+                        currentBrightness, currentSdrBrightness,
+                        mScreenBrightnessRampAnimator.isAnimating(), mClock.uptimeMillis());
+                if (initialRampSkip || hasBrightnessBuckets || !isDisplayContentVisible) {
+                    rampDurationMillis = 0;
+                }
+            }
+
             if (BrightnessUtils.isValidBrightnessValue(animateValue)
                     && (animateValue != currentBrightness
                     || sdrAnimateValue != currentSdrBrightness)) {
@@ -1586,7 +1612,10 @@ final class DisplayPowerController implements AutomaticBrightnessController.Call
                     // display configuration. For now just do the fast animation
                     slowChange = false;
                 }
-                if (skipAnimation) {
+                if (rampDurationMillis > 0) {
+                    animateScreenBrightnessWithDuration(animateValue, sdrAnimateValue,
+                            rampDurationMillis);
+                } else if (skipAnimation) {
                     animateScreenBrightness(animateValue, sdrAnimateValue,
                             SCREEN_ANIMATION_RATE_MINIMUM);
                 } else if (customAnimationRate > 0) {
@@ -2201,20 +2230,36 @@ final class DisplayPowerController implements AutomaticBrightnessController.Call
                 : mAutomaticBrightnessController.getLuxDelta();
         if (mScreenBrightnessRampAnimator.animateTo(target, sdrTarget, rate,
                 ignoreAnimationLimits, luxDelta)) {
-            Trace.traceCounter(Trace.TRACE_TAG_POWER, "TargetScreenBrightness", (int) target);
-
-            String propertyKey = "debug.tracing.screen_brightness";
-            String propertyValue = String.valueOf(target);
-            try {
-                // TODO(b/153319140) remove when we can get this from the above trace invocation
-                SystemProperties.set(propertyKey, propertyValue);
-            } catch (RuntimeException e) {
-                Slog.e(mTag, "Failed to set a system property: key=" + propertyKey
-                        + " value=" + propertyValue + " " + e.getMessage());
-            }
-
-            noteScreenBrightness(target);
+            onScreenBrightnessTargetChanged(target);
         }
+    }
+
+    private void animateScreenBrightnessWithDuration(float target, float sdrTarget,
+            long durationMillis) {
+        if (DEBUG) {
+            Slog.d(mTag, "Animating brightness: target=" + target + ", sdrTarget=" + sdrTarget
+                    + ", durationMillis=" + durationMillis);
+        }
+        if (mScreenBrightnessRampAnimator.animateToWithDuration(target, sdrTarget,
+                durationMillis, mBrightnessRampDurationController)) {
+            onScreenBrightnessTargetChanged(target);
+        }
+    }
+
+    private void onScreenBrightnessTargetChanged(float target) {
+        Trace.traceCounter(Trace.TRACE_TAG_POWER, "TargetScreenBrightness", (int) target);
+
+        String propertyKey = "debug.tracing.screen_brightness";
+        String propertyValue = String.valueOf(target);
+        try {
+            // TODO(b/153319140) remove when we can get this from the above trace invocation
+            SystemProperties.set(propertyKey, propertyValue);
+        } catch (RuntimeException e) {
+            Slog.e(mTag, "Failed to set a system property: key=" + propertyKey
+                    + " value=" + propertyValue + " " + e.getMessage());
+        }
+
+        noteScreenBrightness(target);
     }
 
     private void animateScreenStateChange(
@@ -2644,6 +2689,11 @@ final class DisplayPowerController implements AutomaticBrightnessController.Call
         if (mScreenBrightnessRampAnimator != null) {
             pw.println("  mScreenBrightnessRampAnimator.isAnimating()="
                     + mScreenBrightnessRampAnimator.isAnimating());
+        }
+
+        if (mBrightnessRampDurationController != null) {
+            pw.println();
+            mBrightnessRampDurationController.dump(pw);
         }
 
         if (mColorFadeOffAnimator != null) {
