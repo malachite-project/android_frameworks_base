@@ -167,9 +167,12 @@ class RampAnimator<T> {
         }
 
         if (mTimed) {
-            // Leave the timed ramp: continue from where it is now at the given rate.
+            // Leave the timed ramp: continue from where it is now at the given rate. The timed
+            // ramp keeps the current value in plain HLG; move it into this ramp's gamma space.
             mTimed = false;
             mAnimating = false;
+            mCurrentValue = BrightnessUtils.convertLinearToGamma(
+                    (float) Math.pow(mCurrentLinearValue, 1.0f / mCurrentRampGamma));
         }
 
         // Immediately jump to the target the first time.
@@ -240,7 +243,7 @@ class RampAnimator<T> {
             TimedRamp timedRamp) {
         if (mFirstTime || durationMillis <= 0) {
             return setAnimationTarget(targetLinear, /* rate= */ 0,
-                    /* ignoreAnimationLimits= */ true);
+                    /* ignoreAnimationLimits= */ true, /* luxDelta= */ INVALID_LUX);
         }
         if (mTimed && mAnimating && targetLinear == mTargetLinearValue) {
             return false;
@@ -485,8 +488,7 @@ class RampAnimator<T> {
                     mAwaitingCallback = true;
                     postAnimationCallback();
                 } else if (mAwaitingCallback) {
-                    mChoreographer.removeCallbacks(Choreographer.CALLBACK_ANIMATION,
-                            mAnimationCallback, null);
+                    mChoreographer.removeVsyncCallback(mAnimationCallback);
                     mAwaitingCallback = false;
                 }
             }
