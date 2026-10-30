@@ -21,7 +21,9 @@ import android.annotation.Nullable;
 import android.content.Context;
 import android.graphics.drawable.Drawable;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.PorterDuff;
 import android.graphics.PixelFormat;
 import android.graphics.RectF;
 import android.util.AttributeSet;
@@ -141,6 +143,7 @@ public class UdfpsSurfaceView extends SurfaceView implements SurfaceHolder.Callb
         Canvas canvas = null;
         try {
             canvas = mHolder.lockHardwareCanvas();
+            canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
             mUdfpsIconPressed.setBounds(
                     Math.round(sensorRect.left),
                     Math.round(sensorRect.top),
