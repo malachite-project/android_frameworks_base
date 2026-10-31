@@ -854,7 +854,16 @@ constructor(
     @Composable
     private fun ContentScope.QuickSettingsElement(modifier: Modifier = Modifier) {
         val qqsPadding = viewModel.qqsHeaderHeight
-        val qsExtraPadding = dimensionResource(R.dimen.qs_panel_padding_top)
+        // The ColorOS header is taller than the stock one. A large screen header (no qqs padding)
+        // is not changed by the style.
+        val qsExtraPadding =
+            dimensionResource(
+                if (LocalColorOSQsStyle.current && qqsPadding > 0) {
+                    R.dimen.qs_coloros_header_height
+                } else {
+                    R.dimen.qs_panel_padding_top
+                }
+            )
         Column(
             modifier =
                 modifier.collapseExpandSemanticAction(
@@ -1108,12 +1117,15 @@ constructor(
                         }
                     }
                 }
-                QuickSettingsTheme {
-                    Element(
-                        Elements.FooterActions,
-                        Modifier.sysuiResTag(ResIdTags.qsFooterActions),
-                    ) {
-                        FooterActions(viewModel = viewModel.footerActionsViewModel)
+                // The ColorOS panel has no footer, its buttons are in the header.
+                if (!LocalColorOSQsStyle.current) {
+                    QuickSettingsTheme {
+                        Element(
+                            Elements.FooterActions,
+                            Modifier.sysuiResTag(ResIdTags.qsFooterActions),
+                        ) {
+                            FooterActions(viewModel = viewModel.footerActionsViewModel)
+                        }
                     }
                 }
             }
