@@ -190,13 +190,19 @@ internal fun ColorOSMediaCard(
             )
         }
     Box(
-        modifier.then(
-            if (fillArt) {
-                Modifier
-            } else {
-                Modifier.colorOSMediaLight(art, ColorOSMediaLightCorner, thumbnailCenter)
-            }
-        )
+        modifier
+            // The sweep goes round the card over the art and the light, when the track changes.
+            .colorOSStatusGlow(
+                data.song?.toString() to data.artist?.toString(),
+                ColorOSMediaLightCorner,
+            )
+            .then(
+                if (fillArt) {
+                    Modifier
+                } else {
+                    Modifier.colorOSMediaLight(art, ColorOSMediaLightCorner, thumbnailCenter)
+                }
+            )
     ) {
         if (fillArt && art != null) {
             Image(

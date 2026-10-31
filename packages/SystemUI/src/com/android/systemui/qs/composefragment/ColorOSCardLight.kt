@@ -295,7 +295,7 @@ internal class ColorOSCardLight : Drawable() {
 }
 
 /** Shader pieces of [ColorOSCardLight]. */
-private object ColorOSLightShaders {
+internal object ColorOSLightShaders {
     const val ROUNDED_BOX =
         """
         float roundedBox(float2 p, float2 extent, float r) {
