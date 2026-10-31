@@ -742,6 +742,10 @@
     <dimen name="qs_tile_text_size">14sp</dimen>
     <dimen name="qs_panel_padding">16dp</dimen>
     <dimen name="qs_panel_padding_top">80dp</dimen>
+    <!-- ColorOS QS header: 12dp, the 44dp buttons and 20dp above the status row -->
+    <dimen name="qs_coloros_header_status_top">76dp</dimen>
+    <!-- ColorOS QS header: the above, the status row and 20dp below it -->
+    <dimen name="qs_coloros_header_height">120dp</dimen>
 
     <!-- Size is in sp because the icon is inlined in text -->
     <dimen name="qs_edit_mode_app_icon">14sp</dimen>

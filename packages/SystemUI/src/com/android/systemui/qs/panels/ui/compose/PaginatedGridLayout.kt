@@ -18,11 +18,13 @@ package com.android.systemui.qs.panels.ui.compose
 
 import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement.spacedBy
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.pager.HorizontalPager
@@ -192,6 +194,27 @@ private fun FooterBar(
     editButtonViewModelFactory: EditModeButtonViewModel.Factory,
     isVisible: () -> Boolean = { true },
 ) {
+    // The ColorOS panel has no footer: the build number and the edit button are not shown (the
+    // panel buttons are in the header), only the page dots stay, centered below the grid.
+    if (LocalColorOSQsStyle.current) {
+        Box(
+            modifier =
+                Modifier.requiredHeight(FooterHeight).fillMaxWidth().padding(top = 12.dp),
+            contentAlignment = Alignment.TopCenter,
+        ) {
+            PagerDots(
+                pagerState = pagerState,
+                activeColor = MaterialTheme.colorScheme.onSurface,
+                nonActiveColor = MaterialTheme.colorScheme.onSurface.copy(alpha = .4f),
+                dotSize = 6.dp,
+                spaceSize = 8.dp,
+                showArrows = false,
+                clickToCyclePages = true,
+            )
+        }
+        return
+    }
+
     val showEdit by rememberSystemSettingEnabled(Settings.System.QS_FOOTER_SHOW_EDIT)
 
     val editButtonViewModel =
