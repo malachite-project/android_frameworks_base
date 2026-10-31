@@ -1117,12 +1117,15 @@ constructor(
                         }
                     }
                 }
-                QuickSettingsTheme {
-                    Element(
-                        Elements.FooterActions,
-                        Modifier.sysuiResTag(ResIdTags.qsFooterActions),
-                    ) {
-                        FooterActions(viewModel = viewModel.footerActionsViewModel)
+                // The ColorOS panel has no footer, its buttons are in the header.
+                if (!LocalColorOSQsStyle.current) {
+                    QuickSettingsTheme {
+                        Element(
+                            Elements.FooterActions,
+                            Modifier.sysuiResTag(ResIdTags.qsFooterActions),
+                        ) {
+                            FooterActions(viewModel = viewModel.footerActionsViewModel)
+                        }
                     }
                 }
             }
