@@ -854,7 +854,16 @@ constructor(
     @Composable
     private fun ContentScope.QuickSettingsElement(modifier: Modifier = Modifier) {
         val qqsPadding = viewModel.qqsHeaderHeight
-        val qsExtraPadding = dimensionResource(R.dimen.qs_panel_padding_top)
+        // The ColorOS header is taller than the stock one. A large screen header (no qqs padding)
+        // is not changed by the style.
+        val qsExtraPadding =
+            dimensionResource(
+                if (LocalColorOSQsStyle.current && qqsPadding > 0) {
+                    R.dimen.qs_coloros_header_height
+                } else {
+                    R.dimen.qs_panel_padding_top
+                }
+            )
         Column(
             modifier =
                 modifier.collapseExpandSemanticAction(
