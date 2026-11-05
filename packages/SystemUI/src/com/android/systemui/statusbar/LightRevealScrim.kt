@@ -285,6 +285,21 @@ data class PowerButtonReveal(
     }
 }
 
+/**
+ * Light reveal effect that fades the whole screen in, with no moving edge. The gradient sits off
+ * screen, so everything is outside it and only the alpha of the end color changes.
+ */
+object FadeReveal : LightRevealEffect {
+
+    override fun setRevealAmountOnScrim(amount: Float, scrim: LightRevealScrim) {
+        with(scrim) {
+            revealGradientEndColorAlpha = 1f - amount
+            interpolatedRevealAmount = amount
+            setRevealGradientBounds(-2f, -2f, -1f, -1f)
+        }
+    }
+}
+
 private const val TAG = "LightRevealScrim"
 
 /**
