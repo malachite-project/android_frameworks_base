@@ -37,6 +37,7 @@ import com.android.systemui.shade.ShadeDisplayAware
 import com.android.systemui.statusbar.CircleReveal
 import com.android.systemui.statusbar.LiftReveal
 import com.android.systemui.statusbar.LightRevealEffect
+import com.android.systemui.statusbar.FadeReveal
 import com.android.systemui.statusbar.PowerButtonReveal
 import javax.inject.Inject
 import kotlin.math.max
@@ -102,11 +103,17 @@ constructor(
     /** The reveal effect used if the device was locked/unlocked via the power button. */
     private val powerButtonRevealEffect: Flow<LightRevealEffect> =
         flowOf(
-            PowerButtonReveal(
-                context.resources
-                    .getDimensionPixelSize(R.dimen.physical_power_button_center_screen_location_y)
-                    .toFloat()
-            )
+            if (context.resources.getBoolean(R.bool.config_powerButtonFadeReveal)) {
+                FadeReveal
+            } else {
+                PowerButtonReveal(
+                    context.resources
+                        .getDimensionPixelSize(
+                            R.dimen.physical_power_button_center_screen_location_y
+                        )
+                        .toFloat()
+                )
+            }
         )
 
     private val tapRevealEffect: Flow<LightRevealEffect> =
