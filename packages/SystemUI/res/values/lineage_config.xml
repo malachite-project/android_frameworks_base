@@ -79,4 +79,8 @@
 
     <!-- Whether to force notifications to take up the full width of the screen in landscape -->
     <bool name="config_fullWidthNotificationsInLandscape">false</bool>
+
+    <!-- Whether waking or sleeping with the power button fades the screen instead of
+         playing the wave that starts at the power button. -->
+    <bool name="config_powerButtonFadeReveal">false</bool>
 </resources>
