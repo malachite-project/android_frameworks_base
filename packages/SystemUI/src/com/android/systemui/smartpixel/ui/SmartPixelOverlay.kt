@@ -75,8 +75,11 @@ class SmartPixelOverlay @Inject constructor(
         params.title = "SmartPixelFilter"
         params.layoutInDisplayCutoutMode =
             LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+        // The dot pattern is a filter for this panel only: keep it out of screenshots, screen
+        // recordings and mirroring, as the rounded corner overlay is.
         params.privateFlags = params.privateFlags or
-            LayoutParams.PRIVATE_FLAG_TRUSTED_OVERLAY
+            LayoutParams.PRIVATE_FLAG_TRUSTED_OVERLAY or
+            LayoutParams.PRIVATE_FLAG_IS_ROUNDED_CORNERS_OVERLAY
 
         windowManager.addView(view, params)
         controller.init()
