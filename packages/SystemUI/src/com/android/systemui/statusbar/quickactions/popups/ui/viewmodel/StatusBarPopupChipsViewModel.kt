@@ -24,6 +24,7 @@ import android.os.UserHandle
 import android.provider.Settings
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -31,19 +32,27 @@ import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.keyguard.domain.interactor.KeyguardTransitionInteractor
 import com.android.systemui.keyguard.shared.model.KeyguardState
 import com.android.systemui.lifecycle.HydratedActivatable
+import com.android.systemui.shade.domain.interactor.ShadeInteractor
+import com.android.systemui.shared.system.ActivityManagerWrapper
+import com.android.systemui.shared.system.TaskStackChangeListener
+import com.android.systemui.shared.system.TaskStackChangeListeners
 import com.android.systemui.statusbar.pipeline.shared.domain.interactor.StatusBarVisibilityInteractor
 import com.android.systemui.statusbar.quickactions.alarm.ui.viewmodel.AlarmPopupChipViewModel
+import com.android.systemui.statusbar.quickactions.charging.ui.viewmodel.ChargingPopupChipViewModel
 import com.android.systemui.statusbar.quickactions.assistant.StatusBarAssistantIcon
 import com.android.systemui.statusbar.quickactions.assistant.ui.viewmodel.AssistantIconViewModel
 import com.android.systemui.statusbar.quickactions.av.ui.viewmodel.AvControlsChipViewModel
 import com.android.systemui.statusbar.quickactions.domain.interactor.QuickActionsInteractor
 import com.android.systemui.statusbar.quickactions.flashlight.ui.viewmodel.FlashlightPopupChipViewModel
 import com.android.systemui.statusbar.quickactions.ime.ui.viewmodel.ImeIndicatorChipViewModel
+import com.android.systemui.statusbar.quickactions.liveactivity.ui.viewmodel.LiveActivityPopupChipsViewModel
 import com.android.systemui.statusbar.quickactions.livescore.ui.viewmodel.LiveScorePopupChipViewModel
 import com.android.systemui.statusbar.quickactions.media.ui.viewmodel.MediaControlChipViewModel
 import com.android.systemui.statusbar.quickactions.popups.StatusBarPopupChips
 import com.android.systemui.statusbar.quickactions.screenrecord.ui.viewmodel.LargeScreenRecordingChipViewModel
 import com.android.systemui.statusbar.quickactions.screenrecord.ui.viewmodel.ScreenRecordPopupChipViewModel
+import com.android.systemui.statusbar.quickactions.popups.shared.model.SystemEventKind
+import com.android.systemui.statusbar.quickactions.shared.model.PopupContentModel
 import com.android.systemui.statusbar.quickactions.shared.model.QuickActionChipId
 import com.android.systemui.statusbar.quickactions.shared.model.QuickActionChipModel
 import com.android.systemui.statusbar.quickactions.shared.model.QuickActionPanelModel
@@ -54,9 +63,14 @@ import dagger.assisted.AssistedFactory
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * View model deciding which system process chips to show in the status bar. Emits a list of
@@ -68,6 +82,7 @@ constructor(
     @Assisted private val displayId: Int,
     @Application private val context: Context,
     private val keyguardTransitionInteractor: KeyguardTransitionInteractor,
+    private val shadeInteractor: ShadeInteractor,
     private val quickActionsInteractor: QuickActionsInteractor,
     private val statusBarVisibilityInteractor: StatusBarVisibilityInteractor,
     mediaControlChipFactory: MediaControlChipViewModel.Factory,
@@ -81,6 +96,9 @@ constructor(
     flashlightChipFactory: FlashlightPopupChipViewModel.Factory,
     stopwatchChipFactory: StopwatchPopupChipViewModel.Factory,
     alarmChipFactory: AlarmPopupChipViewModel.Factory,
+    chargingChipFactory: ChargingPopupChipViewModel.Factory,
+    systemEventChipsFactory: SystemEventPopupChipsViewModel.Factory,
+    liveActivityChipsFactory: LiveActivityPopupChipsViewModel.Factory,
 ) : HydratedActivatable() {
 
     private val mediaControlChip by lazy { mediaControlChipFactory.create() }
@@ -96,6 +114,9 @@ constructor(
     private val flashlightChip by lazy { flashlightChipFactory.create() }
     private val stopwatchChip by lazy { stopwatchChipFactory.create() }
     private val alarmChip by lazy { alarmChipFactory.create() }
+    private val chargingChip by lazy { chargingChipFactory.create() }
+    private val systemEventChips by lazy { systemEventChipsFactory.create() }
+    private val liveActivityChips by lazy { liveActivityChipsFactory.create() }
 
     private var isDynamicIslandEnabled by mutableStateOf(readDynamicIslandEnabled())
     private val dynamicIslandObserver =
@@ -110,6 +131,46 @@ constructor(
 
     private var isOnLockscreen by mutableStateOf(false)
 
+    /** Package of the top activity, so a chip is not shown over the app it stands for. */
+    private var foregroundPackage by mutableStateOf<String?>(null)
+
+    private val taskStackListener =
+        object : TaskStackChangeListener {
+            override fun onTaskStackChanged() {
+                updateForegroundPackage()
+            }
+        }
+
+    private fun updateForegroundPackage() {
+        val top = ActivityManagerWrapper.getInstance().runningTask?.topActivity?.packageName
+        if (top != foregroundPackage) {
+            foregroundPackage = top
+            // Opening or switching apps puts an opened island away.
+            currentShownPopupChipId = null
+        }
+    }
+
+    /**
+     * Whether this chip belongs to the app now in the foreground. Like an iOS Live Activity, the
+     * media chip steps aside while its own player is open.
+     */
+    private fun QuickActionChipModel.PopupChip.isOwnedByForegroundApp(): Boolean {
+        val open = foregroundPackage ?: return false
+        return when (val content = popupContent) {
+            is PopupContentModel.Media -> content.model.packageName == open
+            is PopupContentModel.SystemEvent -> content.ownerPackage == open
+            else -> false
+        }
+    }
+
+    /** Whether the notification shade or QS is expanding, expanded, or being dragged. */
+    private var isShadeVisible by
+        mutableStateOf(
+            shadeInteractor.isAnyExpanded.value ||
+                shadeInteractor.anyExpansion.value > 0f ||
+                shadeInteractor.isUserInteracting.value
+        )
+
     /** The ID of the current chip that is currently active, or `null` if no chip is active. */
     private val currentActiveQuickActionId: QuickActionChipId?
         get() = quickActionsInteractor.activePanel?.chipId.takeIf { isShadeWindowOnThisDisplay }
@@ -120,6 +181,32 @@ constructor(
         statusBarVisibilityInteractor.isShadeWindowOnThisDisplay.hydratedStateOf(
             traceName = "isShadeWindowOnThisDisplay"
         )
+
+    /** Chips swiped away, with what they showed then; they return once that changes. */
+    private val hiddenChips = mutableStateMapOf<QuickActionChipId, Any?>()
+
+    /** What a hidden chip has to change to come back: another song, or another stage of a call. */
+    private fun QuickActionChipModel.PopupChip.hideKey(): Any? =
+        when (val content = popupContent) {
+            is PopupContentModel.Media ->
+                listOf(
+                    content.model.packageName,
+                    content.model.songName?.toString(),
+                    content.model.artistName?.toString(),
+                )
+            is PopupContentModel.SystemEvent ->
+                if (content.kind == SystemEventKind.Call) {
+                    content.isRinging to (content.callStartTimeMs != null)
+                } else {
+                    null
+                }
+            else -> null
+        }
+
+    /** Privacy indicators say that a camera or the screen is in use and are never swiped away. */
+    private fun QuickActionChipId.isHideable(): Boolean =
+        this != QuickActionChipId.AvControlsIndicator &&
+            this != QuickActionChipId.ShareScreenPrivacyIndicator
 
     private val incomingQuickActionChipBundle: QuickActionChipBundle by derivedStateOf {
         QuickActionChipBundle(
@@ -134,11 +221,16 @@ constructor(
             flashlight = flashlightChip.chip,
             stopwatch = stopwatchChip.chip,
             alarm = alarmChip.chip,
+            charging = chargingChip.chip,
         )
     }
 
+    /** The island sits under the shade, so it is hidden only where the shade window is. */
+    private val isShadeCoveringIsland: Boolean
+        get() = isShadeVisible && isShadeWindowOnThisDisplay
+
     val shownQuickActionChips: List<QuickActionChipModel> by derivedStateOf {
-        if (!isDynamicIslandEnabled || isOnLockscreen) {
+        if (!isDynamicIslandEnabled || isOnLockscreen || isShadeCoveringIsland) {
             return@derivedStateOf emptyList()
         }
 
@@ -152,9 +244,10 @@ constructor(
                     bundle.stopwatch,
                     bundle.alarm,
                     bundle.media,
+                    bundle.charging,
                     bundle.privacy.takeIf { StatusBarPopupChips.isEnabled },
                     bundle.shareScreen.takeIf { StatusBarPopupChips.isEnabled },
-                )
+                ) + systemEventChips.chips + liveActivityChips.chips
             } else if (StatusBarPopupChips.isEnabled) {
                 listOfNotNull(
                     bundle.media,
@@ -169,6 +262,10 @@ constructor(
 
         candidateChips
             .filterIsInstance<QuickActionChipModel.PopupChip>()
+            .filterNot { it.isOwnedByForegroundApp() }
+            .filterNot { chip ->
+                chip.chipId in hiddenChips && hiddenChips[chip.chipId] == chip.hideKey()
+            }
             .map { chip ->
                 val isShown =
                     (chip.chipId == currentActiveQuickActionId) ||
@@ -181,6 +278,15 @@ constructor(
                             currentShownPopupChipId = null
                         }
                         quickActionsInteractor.close()
+                    },
+                    hide = {
+                        if (chip.chipId.isHideable()) {
+                            hiddenChips[chip.chipId] = chip.hideKey()
+                            if (currentShownPopupChipId == chip.chipId) {
+                                currentShownPopupChipId = null
+                            }
+                            quickActionsInteractor.close()
+                        }
                     },
                     togglePopup = { _, anchorBounds ->
                         chip.popupViewModelFactory?.let { factory ->
@@ -210,6 +316,57 @@ constructor(
             })
     }
 
+    /**
+     * Opens the charging popup briefly when a charger is connected, then puts it away unless
+     * something else has taken over. Skipped while the island is not visible, so a charger
+     * connected with the screen locked is not announced later.
+     */
+    private suspend fun peekChargingOnPlugIn() {
+        chargingChip.plugIns.collectLatest {
+            if (!isDynamicIslandEnabled || isOnLockscreen || isShadeCoveringIsland) {
+                return@collectLatest
+            }
+            // The chip is built from the same battery flows and can land just after the event.
+            withTimeoutOrNull(CHARGING_PEEK_WAIT_MS) {
+                snapshotFlow { incomingQuickActionChipBundle.charging }
+                    .first { it is QuickActionChipModel.PopupChip }
+            } ?: return@collectLatest
+            currentShownPopupChipId = QuickActionChipId.Charging
+            delay(CHARGING_PEEK_MS)
+            if (currentShownPopupChipId == QuickActionChipId.Charging) {
+                currentShownPopupChipId = null
+            }
+        }
+    }
+
+    /**
+     * Opens the popup of a call while it rings and puts it away once the call is picked up, ends or
+     * moves on. Like the charging peek it is skipped while the island is not visible, and the
+     * popup steps aside on the dialler's own screen through [isOwnedByForegroundApp].
+     */
+    private suspend fun showRingingCall() {
+        var held: QuickActionChipId? = null
+        snapshotFlow {
+                systemEventChips.chips
+                    .firstOrNull { (it.popupContent as? PopupContentModel.SystemEvent)?.isRinging == true }
+                    ?.chipId
+            }
+            .distinctUntilChanged()
+            .collect { ringingId ->
+                held?.let { if (currentShownPopupChipId == it) currentShownPopupChipId = null }
+                held = null
+                if (
+                    ringingId != null &&
+                        isDynamicIslandEnabled &&
+                        !isOnLockscreen &&
+                        !isShadeCoveringIsland
+                ) {
+                    currentShownPopupChipId = ringingId
+                    held = ringingId
+                }
+            }
+    }
+
     override suspend fun onActivated() {
         coroutineScope {
             context.contentResolver.registerContentObserver(
@@ -222,9 +379,28 @@ constructor(
             )
             dynamicIslandObserver.onChange(false)
 
+            TaskStackChangeListeners.getInstance().registerTaskStackListener(taskStackListener)
+            updateForegroundPackage()
+
             launch {
                 keyguardTransitionInteractor.isFinishedIn(KeyguardState.LOCKSCREEN)
                     .collectLatest { isOnLockscreen = it }
+            }
+
+            launch {
+                combine(
+                        shadeInteractor.isAnyExpanded,
+                        shadeInteractor.anyExpansion,
+                        shadeInteractor.isUserInteracting,
+                    ) { expanded, expansion, interacting ->
+                        expanded || expansion > 0f || interacting
+                    }
+                    .distinctUntilChanged()
+                    .collect { visible ->
+                        isShadeVisible = visible
+                        // Drop an open island popup so it is not left behind once the shade closes.
+                        if (visible) currentShownPopupChipId = null
+                    }
             }
 
             launch { avControlsChip.activate() }
@@ -236,6 +412,35 @@ constructor(
             launch { flashlightChip.activate() }
             launch { stopwatchChip.activate() }
             launch { alarmChip.activate() }
+            launch { chargingChip.activate() }
+            launch { systemEventChips.activate() }
+            launch { liveActivityChips.activate() }
+            launch { peekChargingOnPlugIn() }
+            launch { showRingingCall() }
+            launch {
+                // A swiped-away chip comes back once it ends or shows something new.
+                snapshotFlow {
+                        val bundle = incomingQuickActionChipBundle
+                        (listOf(
+                                bundle.media,
+                                bundle.screenRecord,
+                                bundle.liveScore,
+                                bundle.flashlight,
+                                bundle.stopwatch,
+                                bundle.alarm,
+                                bundle.charging,
+                            ) + systemEventChips.chips + liveActivityChips.chips)
+                            .filterIsInstance<QuickActionChipModel.PopupChip>()
+                            .associate { it.chipId to it.hideKey() }
+                    }
+                    .collect { present ->
+                        hiddenChips.keys.toList().forEach { id ->
+                            if (id !in present || present[id] != hiddenChips[id]) {
+                                hiddenChips.remove(id)
+                            }
+                        }
+                    }
+            }
             if (StatusBarAssistantIcon.isEnabled) {
                 launch { assistantIcon.activate() }
             }
@@ -267,6 +472,7 @@ constructor(
                 awaitCancellation()
             } finally {
                 context.contentResolver.unregisterContentObserver(dynamicIslandObserver)
+                TaskStackChangeListeners.getInstance().unregisterTaskStackListener(taskStackListener)
             }
         }
     }
@@ -294,6 +500,8 @@ constructor(
             QuickActionChipModel.Hidden(chipId = QuickActionChipId.Stopwatch),
         val alarm: QuickActionChipModel =
             QuickActionChipModel.Hidden(chipId = QuickActionChipId.Alarm),
+        val charging: QuickActionChipModel =
+            QuickActionChipModel.Hidden(chipId = QuickActionChipId.Charging),
     ) {
         val asList: List<QuickActionChipModel>
             get() =
@@ -309,6 +517,7 @@ constructor(
                     flashlight,
                     stopwatch,
                     alarm,
+                    charging,
                 )
     }
 
@@ -324,5 +533,10 @@ constructor(
     @AssistedFactory
     interface Factory {
         fun create(displayId: Int): StatusBarPopupChipsViewModel
+    }
+
+    private companion object {
+        const val CHARGING_PEEK_MS = 3_500L
+        const val CHARGING_PEEK_WAIT_MS = 1_000L
     }
 }

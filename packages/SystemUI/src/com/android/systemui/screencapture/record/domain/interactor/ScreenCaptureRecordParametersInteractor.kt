@@ -58,9 +58,23 @@ constructor(
             if (value) {
                 audioSource = audioSource.withEnabledMic()
             }
+            serviceInteractor.updateShouldShowFrontCamera(value)
             repository.shouldShowFrontCamera = value
         }
         get() = repository.shouldShowFrontCamera
+
+    /**
+     * Hides the selfie switch without writing the saved choice or changing the microphone. Used
+     * when the selected capture target cannot show the camera.
+     */
+    fun suspendFrontCamera() {
+        repository.suspendFrontCamera()
+    }
+
+    /** Reloads the saved selfie choice. Does not change the microphone. */
+    fun restoreFrontCamera() {
+        repository.restoreFrontCamera()
+    }
 
     var lowQuality: Boolean
         set(value) {
@@ -79,6 +93,12 @@ constructor(
             repository.hevc = value
         }
         get() = repository.hevc
+
+    var keepScreenAwake: Boolean
+        set(value) {
+            repository.keepScreenAwake = value
+        }
+        get() = repository.keepScreenAwake
 
     val canChangeAudioSource: StateFlow<Boolean> =
         serviceInteractor.status

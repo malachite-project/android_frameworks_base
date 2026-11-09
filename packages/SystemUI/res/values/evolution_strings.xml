@@ -322,12 +322,82 @@
     <!-- Accessibility state description of an app volume slider [CHAR LIMIT=NONE] -->
     <string name="app_volume_panel_percent"><xliff:g id="percent" example="50">%d</xliff:g> percent</string>
 
+    <!-- Dynamic island -->
+    <string name="dynamic_island_screen_record_short">REC</string>
+    <string name="dynamic_island_screen_record_active">Recording is active</string>
+    <string name="dynamic_island_screen_record_countdown">Starts in %1$ss</string>
+    <string name="dynamic_island_alarm_title">Next alarm</string>
+    <string name="dynamic_island_flashlight_enabled">Enabled</string>
+    <string name="dynamic_island_flashlight_short">ON</string>
+    <string name="dynamic_island_open_action">Open</string>
+    <string name="dynamic_island_open_clock_action">Open clock</string>
+    <string name="dynamic_island_stopwatch_title">Stopwatch</string>
+    <string name="dynamic_island_alarm_active_title">Alarm</string>
+    <string name="dynamic_island_action_snooze">Snooze</string>
+    <string name="dynamic_island_action_lap">Lap</string>
+    <string name="dynamic_island_action_stop">Stop</string>
+    <string name="dynamic_island_action_resume">Resume</string>
+    <string name="dynamic_island_charging_title">Charging</string>
+    <string name="dynamic_island_charging_wireless_title">Wireless charging</string>
+    <string name="dynamic_island_charging_battery_saver">Battery saver</string>
+    <string name="dynamic_island_charging_battery_settings">Battery settings</string>
+    <string name="dynamic_island_charging_max_current">Max current</string>
+    <string name="dynamic_island_charging_max_power">Max power</string>
+    <string name="dynamic_island_charging_max_voltage">Max voltage</string>
+    <string name="dynamic_island_charging_temperature">Temperature</string>
+    <!-- Island chip text once the battery is at 100% [CHAR LIMIT=8] -->
+    <string name="dynamic_island_charging_full">Full</string>
+    <!-- Island alarm chip: time left until the next alarm [CHAR LIMIT=10] -->
+    <string name="dynamic_island_alarm_in_minutes">in <xliff:g id="minutes" example="42">%1$d</xliff:g>m</string>
+    <string name="dynamic_island_alarm_in_hours">in <xliff:g id="hours" example="7">%1$d</xliff:g>h</string>
+    <string name="dynamic_island_alarm_in_hours_minutes">in <xliff:g id="hours" example="7">%1$d</xliff:g>h <xliff:g id="minutes" example="5">%2$d</xliff:g>m</string>
+    <string name="dynamic_island_alarm_in_days">in <xliff:g id="days" example="2">%1$d</xliff:g>d</string>
+
     <!-- ColorOS style QS: shown in the media slot when nothing is playing -->
     <string name="qs_coloros_no_media">Not playing</string>
     <!-- ColorOS style QS: title of the tile editor [CHAR LIMIT=20] -->
     <string name="qs_coloros_edit_title">Edit</string>
     <!-- ColorOS style QS: hint under the title of the tile editor [CHAR LIMIT=40] -->
     <string name="qs_coloros_edit_hint">Hold and drag to rearrange</string>
+    <!-- ColorOS style QS: heading of the pinned slots in the editor [CHAR LIMIT=30] -->
+    <string name="qs_coloros_edit_pinned">Pinned</string>
+    <!-- ColorOS style QS: hint while a pinned slot is picked in the editor [CHAR LIMIT=40] -->
+    <string name="qs_coloros_edit_pinned_pick">Tap a tile to pin it here</string>
+    <!-- ColorOS style QS: button that gives a pinned slot its default back [CHAR LIMIT=20] -->
+    <string name="qs_coloros_edit_pinned_default">Default</string>
+    <!-- ColorOS style QS: heading of current active tiles in the editor [CHAR LIMIT=30] -->
+    <string name="qs_coloros_edit_added">Added tiles</string>
     <!-- ColorOS style QS: heading of the tiles that can be added in the editor [CHAR LIMIT=30] -->
     <string name="qs_coloros_edit_more">More tiles</string>
+    <!-- ColorOS style QS: hint for removing a tile via drag [CHAR LIMIT=40] -->
+    <string name="qs_coloros_edit_remove_hint">Drag here to remove</string>
+    <!-- ColorOS style QS: empty state for added tiles [CHAR LIMIT=50] -->
+    <string name="qs_coloros_edit_empty_added">No active tiles. Tap or drag tiles from below to add.</string>
+    <!-- ColorOS style QS: empty state for available tiles [CHAR LIMIT=50] -->
+    <string name="qs_coloros_edit_empty_more">All tiles added</string>
+    <!-- ColorOS style QS: title of the pill that opens the Bluetooth devices [CHAR LIMIT=20] -->
+    <string name="qs_coloros_my_devices">My Devices</string>
+    <!-- ColorOS style QS: hint under the title of the My Devices pill [CHAR LIMIT=20] -->
+    <string name="qs_coloros_my_devices_hint">Tap to add</string>
+    <!-- NothingOS style QS: ringer slider label for silent mode [CHAR LIMIT=20] -->
+    <string name="qs_nothing_ringer_silent">Silent</string>
+    <!-- NothingOS style QS: ringer slider label for vibrate mode [CHAR LIMIT=20] -->
+    <string name="qs_nothing_ringer_vibrate">Vibrate</string>
+    <!-- NothingOS style QS: ringer slider label for normal (ring) mode [CHAR LIMIT=20] -->
+    <string name="qs_nothing_ringer_normal">Normal</string>
+
+    <!-- Nothing style QS edit mode: sliders that can be placed between the tile rows -->
+    <string name="qs_nothing_slider_brightness">Brightness</string>
+    <string name="qs_nothing_slider_volume">Volume</string>
+    <string name="qs_nothing_slider_add_brightness">Add brightness slider</string>
+    <string name="qs_nothing_slider_add_volume">Add volume slider</string>
+
+    <!-- Screen record dialog -->
+    <string name="screenrecord_keep_screen_awake_label">Keep the screen awake</string>
+    <!-- Shown when the selfie preview cannot be opened. Recording continues. [CHAR LIMIT=80] -->
+    <string name="screenrecord_camera_unavailable">Selfie camera unavailable. Screen recording will continue.</string>
+    <!-- Accessibility description for the draggable selfie preview. [CHAR LIMIT=60] -->
+    <string name="screenrecord_camera_preview">Selfie camera preview. Drag to move.</string>
+    <!-- Hint shown when the selfie preview is enabled. [CHAR LIMIT=60] -->
+    <string name="screenrecord_camera_hint">Drag the selfie camera to move it</string>
 </resources>

@@ -9,8 +9,11 @@ import android.app.ActivityManager
 import android.os.SystemProperties
 import android.view.CrossWindowBlurListeners
 import android.view.View
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.ReadOnlyComposable
@@ -27,11 +30,15 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.toRect
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -83,21 +90,62 @@ private const val ColorOSGlassBlurRadiusProperty = "debug.evolution.lg.cos_blur"
 /** How close to the edge of the window counts as touching it, in pixels. */
 private const val ColorOSGlassEdgeSlop = 0.5f
 
-/** The radius override in pixels, 0 for none. Read once and again when a system property changes. */
+/**
+ * Overrides the alpha, 0 to 255, of the white tint on the glass of the light panel, to match it by
+ * eye on a device: `setprop debug.evolution.lg.cos_light_tile 120`. Unset or negative keeps
+ * [ColorOSLightTileTint]. It is followed live like the blur radius.
+ */
+private const val ColorOSLightTileTintProperty = "debug.evolution.lg.cos_light_tile"
+
+/** The radius and tint overrides. Read once and again when a system property changes. */
 private object ColorOSGlassBlurTune {
+    /** The radius override in pixels, 0 for none. */
     @Volatile
-    var overridePx = read()
+    var overridePx = readRadius()
+        private set
+
+    /** The alpha override of the light tile tint, negative for none. */
+    @Volatile
+    var lightTileAlpha = readLightTileAlpha()
         private set
 
     init {
-        SystemProperties.addChangeCallback { overridePx = read() }
+        SystemProperties.addChangeCallback {
+            overridePx = readRadius()
+            lightTileAlpha = readLightTileAlpha()
+        }
     }
 
-    private fun read(): Int = SystemProperties.getInt(ColorOSGlassBlurRadiusProperty, 0)
+    private fun readRadius(): Int = SystemProperties.getInt(ColorOSGlassBlurRadiusProperty, 0)
+
+    private fun readLightTileAlpha(): Int =
+        SystemProperties.getInt(ColorOSLightTileTintProperty, -1)
 }
 
 /** Below this alpha a region is not worth keeping in SurfaceFlinger. */
 private const val ColorOSGlassMinAlpha = 0.01f
+
+/**
+ * The veil over the glass of the light panel: the pale blue-grey MiraCLO lays over the blur of its
+ * light ColorOS panel while the glass is on.
+ */
+private val ColorOSLightPanelTint = Color(0x59F0F2F7)
+
+/**
+ * The white laid over the blur behind the glass of the light panel's pills, tiles that are off,
+ * sliders and media card. The material SurfaceFlinger draws for them is faint over the pale blur of
+ * the light panel, so the glass reads as flat. ColorOS shows them as clearly lighter than the panel
+ * around them. The dark panel and the tiles that are on are not tinted.
+ */
+private val ColorOSLightTileTint = Color(0x66FFFFFF)
+
+/** The tint the region of [material] gets, as ARGB, 0 for none. */
+private fun colorOSGlassTint(material: Int): Int {
+    if (material != BackgroundBlurDrawable.MATERIAL_TILE_LIGHT) return 0
+    val override = ColorOSGlassBlurTune.lightTileAlpha
+    return if (override >= 0) (override.coerceAtMost(255) shl 24) or 0x00FFFFFF
+    else ColorOSLightTileTint.toArgb()
+}
 
 /**
  * Returns the glass of the panel while SurfaceFlinger can blur behind the shade, and null when it
@@ -155,6 +203,13 @@ internal fun colorOSGlassActiveTileMaterial(): Int =
     if (colorOSDarkPanel()) BackgroundBlurDrawable.MATERIAL_TILE_ACTIVE_DARK
     else BackgroundBlurDrawable.MATERIAL_TILE_ACTIVE_LIGHT
 
+/** The glass behind the whole shade, which the glass of the panel is drawn over. */
+@Composable
+@ReadOnlyComposable
+internal fun colorOSGlassPanelMaterial(): Int =
+    if (colorOSDarkPanel()) BackgroundBlurDrawable.MATERIAL_PANEL_DARK
+    else BackgroundBlurDrawable.MATERIAL_PANEL_LIGHT
+
 /** Keeps the blur drawable of one [colorOSGlassBlur], which is created when it is first drawn. */
 private class ColorOSGlassRegion(private val view: View) {
     var drawable: BackgroundBlurDrawable? = null
@@ -178,9 +233,17 @@ private class ColorOSGlassRegion(private val view: View) {
  * the region goes on to the real edge of the element instead: what is past the window is not
  * seen, and the rim of the glass does not run along the edge of the window like it was a cut.
  * It is hidden while the panel is, and when the element leaves the composition.
+ *
+ * With [wholeWindow] the region is the whole window instead, whatever the size of the element and
+ * whatever a parent clips, which is what the glass behind the shade needs. [shape] is then a
+ * rectangle.
  */
 @Composable
-internal fun Modifier.colorOSGlassBlur(shape: Shape, material: Int): Modifier {
+internal fun Modifier.colorOSGlassBlur(
+    shape: Shape,
+    material: Int,
+    wholeWindow: Boolean = false,
+): Modifier {
     val blur = LocalColorOSGlassBlur.current ?: return this
     val view = LocalView.current
     val region = remember(view) { ColorOSGlassRegion(view) }
@@ -217,6 +280,16 @@ internal fun Modifier.colorOSGlassBlur(shape: Shape, material: Int): Modifier {
         }
         .onGloballyPositioned { coordinates ->
             if (!coordinates.isAttached) return@onGloballyPositioned
+            if (wholeWindow) {
+                visible =
+                    Rect(
+                        coordinates.windowToLocal(Offset.Zero),
+                        coordinates.windowToLocal(
+                            Offset(view.rootView.width.toFloat(), view.rootView.height.toFloat())
+                        ),
+                    )
+                return@onGloballyPositioned
+            }
             val clipped = coordinates.boundsInWindow()
             if (clipped.width <= 0f || clipped.height <= 0f) {
                 // Nothing of it is in the window.
@@ -277,7 +350,7 @@ internal fun Modifier.colorOSGlassBlur(shape: Shape, material: Int): Modifier {
                 }
             drawable.setVisible(true, false)
             drawable.setMaterial(material)
-            drawable.setColor(0)
+            drawable.setColor(colorOSGlassTint(material))
             drawable.setBlurRadius(
                 ColorOSGlassBlurTune.overridePx.takeIf { it > 0 } ?: defaultRadius
             )
@@ -292,4 +365,33 @@ internal fun Modifier.colorOSGlassBlur(shape: Shape, material: Int): Modifier {
             // Drawing it is what reports its position to SurfaceFlinger.
             drawIntoCanvas { drawable.draw(it.nativeCanvas) }
         }
+}
+
+/**
+ * The glass behind the whole shade, the notifications and the panel alike: a region of the panel
+ * material over the full window, which the glass of the pills, the tiles and the sliders is drawn
+ * over. The light panel has [ColorOSLightPanelTint] over it. [alpha] is how much of the shade is
+ * out, 0 hides it. Nothing is drawn where SurfaceFlinger cannot blur, and the scrim of the shade
+ * keeps its own colour then.
+ */
+@Composable
+internal fun ColorOSBackdrop(alpha: () -> Float, modifier: Modifier = Modifier) {
+    val blur = rememberColorOSGlassBlur(alpha) ?: return
+    val tintAlpha = alpha
+    CompositionLocalProvider(LocalColorOSGlassBlur provides blur) {
+        Spacer(
+            modifier.colorOSGlassBlur(
+                RectangleShape,
+                colorOSGlassPanelMaterial(),
+                wholeWindow = true,
+            )
+        )
+        if (!colorOSDarkPanel()) {
+            Spacer(
+                modifier
+                    .graphicsLayer { this.alpha = tintAlpha().coerceIn(0f, 1f) }
+                    .background(ColorOSLightPanelTint)
+            )
+        }
+    }
 }

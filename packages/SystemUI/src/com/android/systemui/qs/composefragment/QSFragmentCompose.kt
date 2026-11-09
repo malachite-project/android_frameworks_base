@@ -18,6 +18,7 @@ package com.android.systemui.qs.composefragment
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.content.res.Configuration
 import android.database.ContentObserver
 import android.graphics.Canvas
@@ -27,6 +28,7 @@ import android.graphics.Rect
 import android.os.Bundle
 import android.os.Trace
 import android.os.UserHandle
+import android.provider.Settings
 import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
@@ -35,6 +37,7 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.annotation.VisibleForTesting
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.LocalOverscrollFactory
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement.spacedBy
@@ -109,6 +112,7 @@ import com.android.compose.animation.scene.SceneTransitionLayoutState
 import com.android.compose.animation.scene.content.state.TransitionState
 import com.android.compose.animation.scene.rememberMutableSceneTransitionLayoutState
 import com.android.compose.animation.scene.transitions
+import com.android.compose.gesture.effect.rememberColorOSOverscrollEffectFactory
 import com.android.compose.gesture.gesturesDisabled
 import com.android.compose.modifiers.height
 import com.android.compose.modifiers.padding
@@ -119,7 +123,9 @@ import com.android.systemui.Dumpable
 import com.android.systemui.Flags
 import com.android.systemui.Flags.notificationShadeBlur
 import com.android.systemui.brightness.ui.compose.BrightnessSliderContainer
+import com.android.systemui.brightness.ui.compose.BrightnessSliderDimensions
 import com.android.systemui.brightness.ui.compose.ContainerColors
+import com.android.systemui.brightness.ui.compose.SliderPart
 import com.android.systemui.compose.modifiers.sysUiResTagContainer
 import com.android.systemui.compose.modifiers.sysuiResTag
 import com.android.systemui.dagger.qualifiers.Background
@@ -127,6 +133,7 @@ import com.android.systemui.dump.DumpManager
 import com.android.systemui.initOnBackPressedDispatcherOwner
 import com.android.systemui.keyboard.shortcut.ui.composable.InteractionsConfig
 import com.android.systemui.keyboard.shortcut.ui.composable.ProvideShortcutHelperIndication
+import com.android.systemui.lifecycle.rememberViewModel
 import com.android.systemui.lifecycle.repeatWhenAttached
 import com.android.systemui.lifecycle.setSnapshotBinding
 import com.android.systemui.log.table.TableLogBuffer
@@ -155,16 +162,25 @@ import com.android.systemui.qs.panels.shared.model.QSFragmentComposeClippingTabl
 import com.android.systemui.qs.panels.ui.compose.EditMode
 import com.android.systemui.qs.panels.ui.compose.QuickQuickSettings
 import com.android.systemui.qs.panels.ui.compose.TileGrid
+import com.android.systemui.qs.panels.ui.compose.infinitegrid.ColorOSBackdrop
 import com.android.systemui.qs.panels.ui.compose.infinitegrid.InfiniteGridLayout
 import com.android.systemui.qs.panels.ui.compose.infinitegrid.LocalColorOSQsStyle
+import com.android.systemui.qs.panels.ui.compose.infinitegrid.LocalNothingQsOsColors
+import com.android.systemui.qs.panels.ui.compose.infinitegrid.LocalNothingQsStyle
+import com.android.systemui.qs.panels.ui.compose.infinitegrid.LocalNothingSliderContent
+import com.android.systemui.qs.panels.ui.compose.infinitegrid.NothingSliderKind
+import com.android.systemui.qs.panels.ui.compose.infinitegrid.rememberNothingLayout
 import com.android.systemui.qs.panels.ui.compose.infinitegrid.rememberQSColorOSMediaArtFill
 import com.android.systemui.qs.panels.ui.compose.infinitegrid.rememberQSColorOSStyle
+import com.android.systemui.qs.panels.ui.compose.infinitegrid.rememberQSNothingOsColors
+import com.android.systemui.qs.panels.ui.compose.infinitegrid.rememberQSNothingStyle
 import com.android.systemui.qs.shared.ui.QuickSettings.Elements
 import com.android.systemui.qs.ui.composable.QuickSettingsShade
 import com.android.systemui.qs.ui.composable.QuickSettingsShade.systemGestureExclusionInShade
 import com.android.systemui.qs.ui.composable.QuickSettingsTheme
 import com.android.systemui.res.R
 import com.android.systemui.shade.ShadeDisplayAware
+import com.android.systemui.shade.domain.interactor.ShadeAnimationInteractor
 import com.android.systemui.statusbar.policy.ConfigurationController
 import com.android.systemui.statusbar.policy.ConfigurationController.ConfigurationListener
 import com.android.systemui.util.LifecycleFragment
@@ -201,6 +217,7 @@ constructor(
     private val mediaDataManager: MediaDataManager,
     private val activityStarter: ActivityStarter,
     private val mediaOutputDialogManager: MediaOutputDialogManager,
+    private val shadeAnimationInteractor: ShadeAnimationInteractor,
 ) : LifecycleFragment(), QS, Dumpable {
 
     private val scrollListener = MutableStateFlow<QS.ScrollListener?>(null)
@@ -220,6 +237,12 @@ constructor(
     private var bottomBarPositionInRoot = IntRect(IntOffset(0, 0), 0)
     private var bottomContentPadding by mutableIntStateOf(0)
     private var colorOSQsStyle by mutableStateOf(false)
+
+    /**
+     * Whether the Nothing style draws its sliders inside the tile grid, so the QS scene has no
+     * brightness slider element for the one of QQS to move to.
+     */
+    private var nothingSlidersInGrid by mutableStateOf(false)
 
     /**
      * Whether the ColorOS panel fits the height of the Quick Settings scroller. It does for most
@@ -278,7 +301,16 @@ constructor(
                         setContent {
                             val colorOSStyle = rememberQSColorOSStyle()
                             SideEffect { colorOSQsStyle = colorOSStyle }
-                            CompositionLocalProvider(LocalColorOSQsStyle provides colorOSStyle) {
+                            val nothingStyle = rememberQSNothingStyle()
+                            val nothingOsColors = rememberQSNothingOsColors()
+                            CompositionLocalProvider(
+                                LocalColorOSQsStyle provides colorOSStyle,
+                                LocalNothingQsStyle provides nothingStyle,
+                                LocalNothingQsOsColors provides (nothingStyle && nothingOsColors),
+                            ) {
+                                val slidersInGrid =
+                                    nothingStyle && rememberNothingLayout().sliders.isNotEmpty()
+                                SideEffect { nothingSlidersInGrid = slidersInGrid }
                                 this@QSFragmentCompose.Content(Modifier.sysUiResTagContainer())
                             }
                         }
@@ -327,6 +359,7 @@ constructor(
 
     @Composable
     private fun Content(modifier: Modifier = Modifier) {
+        val launchProgress by shadeAnimationInteractor.launchProgress.collectAsStateWithLifecycle()
         PlatformTheme(isDarkTheme = if (notificationShadeBlur()) isSystemInDarkTheme() else true) {
             ProvideShortcutHelperIndication(interactionsConfig = interactionsConfig()) {
                 Box(
@@ -356,6 +389,22 @@ constructor(
                             // by the composables.
                             .thenIf(viewModel.showingMirror) { Modifier.gesturesDisabled() }
                 ) {
+                    // The glass behind the whole shade in the ColorOS style, in place of the
+                    // color of the scrim (see ScrimController). It follows the shade, not the
+                    // panel, so it is also there with only the notifications and QQS down.
+                    if (LocalColorOSQsStyle.current && notificationShadeBlur()) {
+                        ColorOSBackdrop(
+                            alpha = {
+                                if (viewModel.isQsVisibleAndAnyShadeExpanded) {
+                                    viewModel.panelExpansionFraction *
+                                        colorOSLaunchGlassFade(launchProgress)
+                                } else {
+                                    0f
+                                }
+                            },
+                            modifier = Modifier.matchParentSize(),
+                        )
+                    }
                     CollapsableQuickSettingsSTL()
                 }
             }
@@ -388,8 +437,11 @@ constructor(
                                 animateTilesExpansion = {
                                     viewModel.animateTilesExpansion && !colorOSQsStyle
                                 },
-                                // The ColorOS panel has its own slider, so the QQS one fades out.
-                                fadeOutBrightnessSlider = { colorOSQsStyle },
+                                // The ColorOS panel has its own slider, and the Nothing one draws its
+                                // sliders in the grid, so the QQS one fades out.
+                                fadeOutBrightnessSlider = {
+                                    colorOSQsStyle || nothingSlidersInGrid
+                                },
                                 fadeOutQqsTiles = { colorOSQsStyle },
                             )
                         }
@@ -449,7 +501,9 @@ constructor(
         ) {
             scene(QuickSettings, alwaysCompose = true) {
                 LaunchedEffect(Unit) { viewModel.onQSOpen() }
-                Element(QuickSettings.rootElementKey, Modifier) { QuickSettingsElement() }
+                Element(QuickSettings.rootElementKey, Modifier) {
+                    ColorOSOverscroll { QuickSettingsElement() }
+                }
             }
 
             scene(QuickQuickSettings, alwaysCompose = true) {
@@ -851,14 +905,30 @@ constructor(
         }
     }
 
+    /**
+     * Gives the scrollers in [content] the stretch of the ColorOS control center when the ColorOS
+     * style is on, and leaves the overscroll they would get otherwise as it is.
+     */
+    @Composable
+    private fun ColorOSOverscroll(content: @Composable () -> Unit) {
+        val default = LocalOverscrollFactory.current
+        val colorOS = rememberColorOSOverscrollEffectFactory()
+        CompositionLocalProvider(
+            LocalOverscrollFactory provides if (LocalColorOSQsStyle.current) colorOS else default,
+            content = content,
+        )
+    }
+
     @Composable
     private fun ContentScope.QuickSettingsElement(modifier: Modifier = Modifier) {
+        val launchProgress by shadeAnimationInteractor.launchProgress.collectAsStateWithLifecycle()
         val qqsPadding = viewModel.qqsHeaderHeight
         // The ColorOS header is taller than the stock one. A large screen header (no qqs padding)
         // is not changed by the style.
+        val colorOSHeader = LocalColorOSQsStyle.current && qqsPadding > 0
         val qsExtraPadding =
             dimensionResource(
-                if (LocalColorOSQsStyle.current && qqsPadding > 0) {
+                if (colorOSHeader) {
                     R.dimen.qs_coloros_header_height
                 } else {
                     R.dimen.qs_panel_padding_top
@@ -919,8 +989,14 @@ constructor(
                                 .sysuiResTag(ResIdTags.qsScroll)
                     ) {
                         val containerViewModel = viewModel.containerViewModel
+                        // The room of the ColorOS header is part of the panel, which draws the
+                        // buttons in it.
                         Spacer(
-                            modifier = Modifier.height { qqsPadding + qsExtraPadding.roundToPx() }
+                            modifier =
+                                Modifier.height {
+                                    qqsPadding +
+                                        if (colorOSHeader) 0 else qsExtraPadding.roundToPx()
+                                }
                         )
                         val BrightnessSlider: @Composable () -> Unit = {
                             Element(Elements.BrightnessSlider, modifier = modifier) {
@@ -1083,6 +1159,27 @@ constructor(
                                         modifier = Modifier.padding(horizontal = 23.dp),
                                         availableHeight = colorOSAvailableHeight,
                                         onFitChanged = { colorOSContentFits = it },
+                                        headerHeight = if (colorOSHeader) qsExtraPadding else 0.dp,
+                                        header = {
+                                            val editButton =
+                                                rememberViewModel("ColorOSHeaderEdit") {
+                                                    viewModel.editModeButtonViewModelFactory
+                                                        .create()
+                                                }
+                                            val settings by
+                                                viewModel.footerActionsViewModel.settings
+                                                    .collectAsStateWithLifecycle(null)
+                                            ColorOSHeaderButtons(
+                                                onEdit = { editButton.onButtonClick() },
+                                                onSettings = settings?.onClick,
+                                            )
+                                        },
+                                        onOpenDevices = {
+                                            activityStarter.postStartActivityDismissingKeyguard(
+                                                Intent(Settings.ACTION_BLUETOOTH_SETTINGS),
+                                                /* delay= */ 0,
+                                            )
+                                        },
                                         expansion = {
                                             viewModel.expansionState.progress *
                                                 viewModel.panelExpansionFraction
@@ -1094,7 +1191,8 @@ constructor(
                                             if (viewModel.isQsVisibleAndAnyShadeExpanded &&
                                                 !viewModel.isEditing
                                             ) {
-                                                viewModel.viewAlpha
+                                                viewModel.viewAlpha *
+                                                    colorOSLaunchGlassFade(launchProgress)
                                             } else {
                                                 0f
                                             }
@@ -1102,17 +1200,48 @@ constructor(
                                     )
                                 }
                             } else {
-                                QuickSettingsLayout(
-                                    brightness =
-                                        if (viewModel.isBrightnessSliderVisible) {
-                                            BrightnessSlider
-                                        } else {
-                                            {}
-                                        },
-                                    tiles = TileGrid,
-                                    media = Media,
-                                    mediaInRow = viewModel.qsMediaInRow,
-                                )
+                                // The Nothing style draws the sliders inside its tile grid when
+                                // the layout has slider entries, instead of the top or bottom one.
+                                val nothingSlidersInGrid =
+                                    LocalNothingQsStyle.current &&
+                                        rememberNothingLayout().sliders.isNotEmpty()
+                                val nothingSliderContent: @Composable (NothingSliderKind) -> Unit =
+                                    remember(viewModel, layoutState) {
+                                        @Composable { kind: NothingSliderKind ->
+                                            BrightnessSlider(
+                                                viewModel,
+                                                layoutState,
+                                                part =
+                                                    if (kind == NothingSliderKind.Brightness) {
+                                                        SliderPart.BrightnessOnly
+                                                    } else {
+                                                        SliderPart.VolumeOnly
+                                                    },
+                                                dimensions =
+                                                    BrightnessSliderDimensions.Default.copy(
+                                                        verticalPadding = 0.dp
+                                                    ),
+                                            )
+                                        }
+                                    }
+                                CompositionLocalProvider(
+                                    LocalNothingSliderContent provides nothingSliderContent
+                                ) {
+                                    QuickSettingsLayout(
+                                        brightness =
+                                            if (
+                                                viewModel.isBrightnessSliderVisible &&
+                                                    !nothingSlidersInGrid
+                                            ) {
+                                                BrightnessSlider
+                                            } else {
+                                                {}
+                                            },
+                                        tiles = TileGrid,
+                                        media = Media,
+                                        mediaInRow = viewModel.qsMediaInRow,
+                                    )
+                                }
                             }
                         }
                     }
@@ -1137,6 +1266,8 @@ constructor(
     private fun BrightnessSlider(
         viewModel: QSFragmentComposeViewModel,
         layoutState: SceneTransitionLayoutState,
+        part: SliderPart = SliderPart.Both,
+        dimensions: BrightnessSliderDimensions = BrightnessSliderDimensions.Default,
     ) {
         Box(
             Modifier.systemGestureExclusionInShade(
@@ -1164,6 +1295,8 @@ constructor(
                             ContainerColors.defaultContainerColor,
                         ),
                     modifier = Modifier.fillMaxWidth(),
+                    dimensions = dimensions,
+                    part = part,
                 )
             }
         }

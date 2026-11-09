@@ -46,4 +46,17 @@
 
     <!-- Biometric view -->
     <dimen name="biometric_indicator_above_margin_bottom">8dp</dimen>
+
+    <!-- ColorOS QS header: distance from the top of the header to the status row, which sits
+         below the 44dp panel buttons -->
+    <dimen name="qs_coloros_header_status_top">106dp</dimen>
+    <!-- Reduce the room reserved above the first row of tiles from 120dp to
+         104dp, so the tiles sit closer to the status row like in the ColorOS panel. -->
+    <dimen name="qs_coloros_header_height">104dp</dimen>
+
+    <!-- Largest cell of the Nothing style Quick Settings grid, 0dp for no limit -->
+    <dimen name="qs_nothing_max_cell_size">0dp</dimen>
+
+    <!-- Height of the Nothing style brightness slider -->
+    <dimen name="qs_nothing_brightness_slider_height">52dp</dimen>
 </resources>

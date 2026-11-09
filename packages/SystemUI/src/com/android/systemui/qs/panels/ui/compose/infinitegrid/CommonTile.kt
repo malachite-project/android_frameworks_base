@@ -35,26 +35,32 @@ import androidx.compose.animation.graphics.res.animatedVectorResource
 import androidx.compose.animation.graphics.res.rememberAnimatedVectorPainter
 import androidx.compose.animation.graphics.vector.AnimatedImageVector
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -82,14 +88,17 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorProducer
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.DefaultAlpha
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asComposePath
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.dimensionResource
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -135,6 +144,7 @@ private const val TEST_TAG_TILE_ICON = "qs_tile_icon"
 private const val TEST_TAG_TOGGLE = "qs_tile_toggle_target"
 private const val TEST_TAG_SMALL = "qs_tile_small"
 private const val TEST_TAG_LARGE = "qs_tile_large"
+private const val BLUETOOTH_TILE_SPEC = "bt"
 
 /** White of an active ColorOS bubble on a dark panel, a touch short of opaque like ColorOS. */
 internal val ColorOSActiveFill = Color(0xF2FFFFFF)
@@ -153,6 +163,19 @@ internal val ColorOSTileRim =
         0.7f to Color.White.copy(alpha = 0.05f),
         1f to Color.White.copy(alpha = 0.22f),
     )
+
+/**
+ * Glass rim of ColorOS tiles on the light panel: a thin, almost opaque white edge, which is what
+ * separates the pale glass from the light blur behind it, as it does in MiraCLO. The faint lit rim
+ * of [ColorOSTileRim] does not show against a light background.
+ */
+internal val ColorOSTileRimLight = SolidColor(Color.White.copy(alpha = 0.95f))
+
+/** The rim of ColorOS tiles that are drawn without a blur region, for the theme of the panel. */
+@Composable
+internal fun colorOSTileRim(): Brush =
+    if (MaterialTheme.colorScheme.surface.luminance() < 0.5f) ColorOSTileRim
+    else ColorOSTileRimLight
 
 /**
  * Diameter of the ColorOS round tiles, which is also the height of the pills and the width of the
@@ -331,6 +354,12 @@ fun ClassicTileContent(
                             else MaterialTheme.typography.labelMedium.lineHeight,
                     ),
                     modifier = Modifier
+                        // The label of a ColorOS tile is measured without a height limit. A text
+                        // that does not get the room for its lines is cut to the lines that do
+                        // fit, and a bigger font than the slot was drawn for left one line.
+                        .thenIf(colorOSLabels) {
+                            Modifier.wrapContentHeight(Alignment.Top, unbounded = true)
+                        }
                         .padding(top = 4.dp)
                         .fillMaxWidth(),
                 )
@@ -407,17 +436,19 @@ fun LargeTileContent(
         val animatedBackgroundColor by
             animateColorAsState(colors.iconBackground, label = "QSTileDualTargetBackgroundColor")
         val focusBorderColor = MaterialTheme.colorScheme.secondary
-        // The icon circle of a ColorOS pill is glass, like the round tiles: a blur region of its
-        // own that a white bubble fades in over while the tile is on, so the lit rim of the glass
-        // still shows around the bubble. Without blur it is the flat fill with the glass rim.
+        // The icon circle of a ColorOS pill that is on is glass, like the round tiles: a blur region
+        // of its own that a white bubble fades in over, so the lit rim of the glass still shows
+        // around the bubble. While the pill is off (or unavailable) the circle is a flat, lighter
+        // disc with no rim and no blur region of its own, as in ColorOS. Without blur it is the flat
+        // fill with the glass rim.
         val onGlass = colorOSStyle && LocalColorOSGlassBlur.current != null
-        val glassMaterial =
-            if (active) colorOSGlassActiveTileMaterial() else colorOSGlassTileMaterial()
+        val glassMaterial = colorOSGlassActiveTileMaterial()
         val glassBubbleAlpha by
             animateFloatAsState(if (onGlass && active) 1f else 0f, label = "QSTileGlassBubble")
         // colorOSGlassBlur is @Composable, so it is built here and not inside the thenIf lambda.
         val glassBlurModifier =
-            if (onGlass) Modifier.colorOSGlassBlur(iconShape, glassMaterial) else Modifier
+            if (onGlass && active) Modifier.colorOSGlassBlur(iconShape, glassMaterial)
+            else Modifier
         Box(
             modifier =
                 Modifier.size(CommonTileDefaults.ToggleTargetSize).thenIf(isDualTarget) {
@@ -426,6 +457,11 @@ fun LargeTileContent(
                         .then(glassBlurModifier)
                         .drawBehind {
                             if (onGlass) {
+                                // The flat disc of a pill that is off, it also stays under the
+                                // bubble that fades out while the pill turns off.
+                                if (!active) {
+                                    drawRect(animatedBackgroundColor)
+                                }
                                 if (glassBubbleAlpha > 0f) {
                                     drawRect(
                                         color = animatedBackgroundColor,
@@ -548,6 +584,152 @@ fun LargeTileLabels(
                     },
             )
         }
+    }
+}
+
+@Composable
+fun NothingCircleTileContent(
+    iconProvider: Context.() -> Icon,
+    visualState: Int,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val icon = iconProvider(context)
+    val isActive = visualState == android.service.quicksettings.Tile.STATE_ACTIVE
+    val iconColor = if (isActive) Color.Black else Color.White
+    val animatedIconColor by animateColorAsState(iconColor, label = "NothingCircleIconColor")
+    val iconSize = 28.dp
+
+    val loadedDrawable = remember(icon, context) {
+        when (icon) {
+            is Icon.Loaded -> icon.drawable
+            is Icon.Resource -> context.getDrawable(icon.resId)
+        }
+    }
+
+    Box(
+        modifier = modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center,
+    ) {
+        NonClippedImage(
+            painter = rememberDrawablePainter(loadedDrawable),
+            contentDescription = icon.contentDescription?.load(),
+            colorFilter = ColorFilter.tint(color = animatedIconColor),
+            modifier = Modifier.size(iconSize),
+            contentScale = ContentScale.Fit,
+        )
+    }
+}
+
+@Composable
+fun NothingPillTileContent(
+    label: String,
+    secondaryLabel: String? = null,
+    iconProvider: Context.() -> Icon,
+    visualState: Int,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val icon = iconProvider(context)
+    val isActive = visualState == android.service.quicksettings.Tile.STATE_ACTIVE
+    val contentColor = if (isActive) NothingQsColors.contentOnActive else NothingQsColors.content
+    val dividerColor = if (isActive) NothingQsColors.dividerOnActive else NothingQsColors.divider
+    val iconSize = 26.dp
+
+    val loadedDrawable = remember(icon, context) {
+        when (icon) {
+            is Icon.Loaded -> icon.drawable
+            is Icon.Resource -> context.getDrawable(icon.resId)
+        }
+    }
+
+    Row(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(horizontal = 18.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // Left Icon
+        NonClippedImage(
+            painter = rememberDrawablePainter(loadedDrawable),
+            contentDescription = icon.contentDescription?.load(),
+            colorFilter = ColorFilter.tint(color = contentColor),
+            modifier = Modifier.size(iconSize),
+            contentScale = ContentScale.Fit,
+        )
+
+        // Vertical divider |
+        Spacer(modifier = Modifier.width(14.dp))
+        Box(
+            modifier = Modifier
+                .width(1.dp)
+                .height(22.dp)
+                .background(dividerColor)
+        )
+        Spacer(modifier = Modifier.width(14.dp))
+
+        // Title and Subtitle
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Text(
+                text = label,
+                color = contentColor,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp,
+                ),
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (!secondaryLabel.isNullOrEmpty() && secondaryLabel != label) {
+                Text(
+                    text = secondaryLabel,
+                    color = contentColor.copy(alpha = 0.7f),
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 12.sp,
+                    ),
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun NothingQuadTileContent(
+    tileSpec: String? = null,
+    label: String,
+    secondaryLabel: String? = null,
+    iconProvider: Context.() -> Icon,
+    visualState: Int,
+    onClick: () -> Unit = {},
+    modifier: Modifier = Modifier,
+) {
+    val isActive = visualState == android.service.quicksettings.Tile.STATE_ACTIVE
+    if (tileSpec == BLUETOOTH_TILE_SPEC) {
+        NothingBluetoothQuadTileContent(
+            iconProvider = iconProvider,
+            isActive = isActive,
+            label = label,
+            secondaryLabel = secondaryLabel,
+            onClick = onClick,
+            modifier = modifier,
+        )
+        return
+    }
+    Column(
+        modifier = modifier.fillMaxSize().padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.SpaceBetween,
+    ) {
+        NothingQuadIconButton(iconProvider = iconProvider, isActive = isActive, onClick = onClick)
+        NothingQuadTileLabels(label, secondaryLabel, isActive)
+        Spacer(modifier = Modifier.height(5.dp))
     }
 }
 
@@ -818,8 +1000,9 @@ object CommonTileDefaults {
     val ClassicLabelHeight = 32.dp
 
     /**
-     * Line height of a ColorOS round tile label. Two lines have to fit in [ClassicLabelHeight]
-     * less the 4dp above the label, or the ellipsis cuts the label to one line.
+     * Line height of a ColorOS round tile label. Two lines of it fit in [ClassicLabelHeight] less
+     * the 4dp above the label, and the label is measured without a height limit besides, so a
+     * bigger font only makes the second line reach into the gap under the tile.
      */
     val ColorOSLabelLineHeight = 13.sp
 

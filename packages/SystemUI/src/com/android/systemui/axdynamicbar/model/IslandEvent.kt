@@ -91,6 +91,9 @@ sealed class IslandEvent(open val priority: Int, val id: String) : Comparable<Is
         val leftBatteryLevel: Int? = null,
         val rightBatteryLevel: Int? = null,
         val caseBatteryLevel: Int? = null,
+        val leftCharging: Boolean = false,
+        val rightCharging: Boolean = false,
+        val caseCharging: Boolean = false,
     ) : IslandEvent(priority = 60, id = "bluetooth") {
         // deviceImage stays in the comparison. It arrives after the event is first published, and
         // drawable-only updates are otherwise dropped before they reach the bar.
@@ -305,9 +308,22 @@ sealed class IslandEvent(open val priority: Int, val id: String) : Comparable<Is
         val callType: String = "Phone:incoming",
         val callStartTimeMs: Long = System.currentTimeMillis(),
         val actions: List<NotificationAction> = emptyList(),
+        val connected: Boolean = false,
+        val controls: CallControls = CallControls(),
     ) : IslandEvent(priority = 100, id = "call_${sbn.key}") {
         override fun withoutDrawables() = copy(appIcon = null, callerPhoto = null)
     }
+
+    /** The call's own buttons; a `null` state means the calling app doesn't offer it. */
+    data class CallControls(
+        val answer: android.app.PendingIntent? = null,
+        val decline: android.app.PendingIntent? = null,
+        val hangUp: android.app.PendingIntent? = null,
+        val speakerOn: Boolean? = null,
+        val speaker: android.app.PendingIntent? = null,
+        val muted: Boolean? = null,
+        val mute: android.app.PendingIntent? = null,
+    )
 
     data class Notification(
         val sbn: StatusBarNotification,

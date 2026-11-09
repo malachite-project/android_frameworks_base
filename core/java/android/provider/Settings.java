@@ -6944,7 +6944,13 @@ public final class Settings {
         public static final String NAVBAR_STYLE = "navbar_style";
 
         /**
-         * Defines the screen-off animation to display
+         * Defines the screen-off animation to display.
+         * 0 = Fade (stock ColorFade behaviour, default)
+         * 1 = CRT (ElectronBeam)
+         * 2 = Scale (ElectronBeam)
+         * 3 = Iris (ElectronBeam)
+         * 4 = Desaturate (ElectronBeam)
+         * 5 = Shutter (ElectronBeam)
          * @hide
          */
         public static final String SCREEN_OFF_ANIMATION = "screen_off_animation";
@@ -7833,10 +7839,19 @@ public final class Settings {
 
         /**
          * QS panel style: 0 for the default card style, 1 for the classic
-         * style and 2 for the ColorOS style
+         * style, 2 for the ColorOS style and 3 for the Nothing style
          * @hide
          */
         public static final String QS_PANEL_STYLE = "qs_panel_style";
+
+        /**
+         * Colors of the Nothing QS panel style: 0 for the dark grey tiles of the style in both
+         * themes, 1 for the Nothing OS 5.0 palette with a flat panel background, which is the
+         * default, and 2 for the Nothing OS 5.0 palette with the translucent shade that shows
+         * the wallpaper. Only used when {@link #QS_PANEL_STYLE} is the Nothing style.
+         * @hide
+         */
+        public static final String QS_NOTHING_COLOR_STYLE = "qs_nothing_color_style";
 
         /**
          * Whether to hide label under tiles in classic QS panel style
@@ -15141,6 +15156,12 @@ public final class Settings {
         public static final String SHADE_COLOR_STYLE = "shade_color_style";
 
         /**
+         * Whether to enable dark theme on battery saver mode
+         * @hide
+         */
+        public static final String BATTERY_SAVER_DARK_THEME = "battery_saver_dark_theme";
+
+        /**
          * Keys we no longer back up under the current schema, but want to continue to
          * process when restoring historical backup datasets.
          *
@@ -15852,6 +15873,9 @@ public final class Settings {
          * @hide
          */
         public static final String SPOOF_TRICKYSTORE_KEYBOX = "spoof_trickystore_keybox";
+
+        /** @hide */
+        public static final String SPOOF_DUCK_RKP_ENABLED = "spoof_duck_rkp_enabled";
 
         /**
          * @hide

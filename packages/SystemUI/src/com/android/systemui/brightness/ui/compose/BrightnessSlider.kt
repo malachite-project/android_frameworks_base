@@ -28,6 +28,7 @@ import android.os.Vibrator
 import android.provider.Settings
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
+import androidx.annotation.DrawableRes
 import androidx.annotation.VisibleForTesting
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
@@ -37,18 +38,26 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -75,6 +84,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -94,6 +105,7 @@ import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.colorResource
+import androidx.compose.ui.res.dimensionResource
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.semantics
@@ -122,6 +134,9 @@ import com.android.systemui.brightness.ui.viewmodel.BrightnessSliderViewModel
 import com.android.systemui.brightness.ui.viewmodel.Drag
 import com.android.systemui.common.shared.colors.SystemUISliderColors
 import com.android.systemui.common.shared.model.Icon
+import com.android.systemui.qs.panels.ui.compose.infinitegrid.LocalNothingQsStyle
+import com.android.systemui.qs.panels.ui.compose.infinitegrid.NothingQsColors
+import com.android.systemui.qs.panels.ui.compose.infinitegrid.rememberNothingQSMaxContentWidth
 import com.android.systemui.compose.modifiers.sysuiResTag
 import com.android.systemui.gradient.GradientColors
 import com.android.systemui.gradient.diagonal
@@ -286,189 +301,220 @@ fun BrightnessSlider(
         }
     }
 
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = modifier
-    ) {
-        Slider(
+    if (LocalNothingQsStyle.current) {
+        NothingSlider(
             value = animatedValue,
             valueRange = floatValueRange,
             enabled = enabled,
-            colors = colors,
+            iconRes =
+                if (autoMode) R.drawable.ic_qs_brightness_auto_on
+                else R.drawable.ic_qs_brightness_auto_off,
+            iconDescription = stringResource(R.string.accessibility_adaptive_brightness),
+            iconEnabled = hasAutoBrightness,
+            overriddenByAppState = overriddenByAppState,
+            contentDescription = contentDescription,
             onValueChange = {
-                if (enabled) {
-                    if (!overriddenByAppState) {
-                        hapticsViewModel?.onValueChange(it)
-                        value = it.toInt()
-                        onDrag(value)
-                    }
+                if (enabled && !overriddenByAppState) {
+                    hapticsViewModel?.onValueChange(it)
+                    value = it.toInt()
+                    onDrag(value)
                 }
             },
             onValueChangeFinished = {
-                if (enabled) {
-                    if (!overriddenByAppState) {
-                        hapticsViewModel?.onValueChangeEnded()
-                        onStop(value)
-                    }
+                if (enabled && !overriddenByAppState) {
+                    hapticsViewModel?.onValueChangeEnded()
+                    onStop(value)
                 }
             },
-            modifier =
-                Modifier
-                    .weight(1f)
-                    .sysuiResTag("slider")
-                    .semantics(mergeDescendants = true) {
-                        this.text = AnnotatedString(contentDescription)
-                    }
-                    .sliderPercentage {
-                        (value - valueRange.first).toFloat() / (valueRange.last - valueRange.first)
-                    }
-                    .thenIf(isRestricted) {
-                        Modifier.clickable {
-                            if (restriction is PolicyRestriction.Restricted) {
-                                onRestrictedClick(restriction)
-                            }
-                        }
-                    },
+            onIconClick = onIconClick,
             interactionSource = interactionSource,
-            thumb = {
-                SliderDefaults.Thumb(
-                    interactionSource = interactionSource,
-                    enabled = enabled,
-                    thumbSize = DpSize(dimensions.thumbWidth, dimensions.thumbHeight),
-                    colors = thumbColors,
-                )
-            },
-            track = { sliderState ->
-                var showIconActive by remember { mutableStateOf(true) }
-                val iconActiveAlphaAnimatable = remember {
-                    Animatable(
-                        initialValue = 1f,
-                        typeConverter = Float.VectorConverter,
-                        label = "iconActiveAlpha",
-                    )
-                }
-
-                val iconInactiveAlphaAnimatable = remember {
-                    Animatable(
-                        initialValue = 0f,
-                        typeConverter = Float.VectorConverter,
-                        label = "iconInactiveAlpha",
-                    )
-                }
-
-                LaunchedEffect(
-                    iconActiveAlphaAnimatable,
-                    iconInactiveAlphaAnimatable,
-                    showIconActive,
-                ) {
-                    if (showIconActive) {
-                        launch { iconActiveAlphaAnimatable.appear() }
-                        launch { iconInactiveAlphaAnimatable.disappear() }
-                    } else {
-                        launch { iconActiveAlphaAnimatable.disappear() }
-                        launch { iconInactiveAlphaAnimatable.appear() }
+            modifier = modifier,
+        )
+    } else {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = modifier
+        ) {
+            Slider(
+                value = animatedValue,
+                valueRange = floatValueRange,
+                enabled = enabled,
+                colors = colors,
+                onValueChange = {
+                    if (enabled) {
+                        if (!overriddenByAppState) {
+                            hapticsViewModel?.onValueChange(it)
+                            value = it.toInt()
+                            onDrag(value)
+                        }
                     }
-                }
-
-                SliderDefaults.Track(
-                    sliderState = sliderState,
-                    modifier =
-                        Modifier.motionTestValues {
-                                iconActiveAlphaAnimatable.value exportAs
-                                    BrightnessSliderMotionTestKeys.ActiveIconAlpha
-                                iconInactiveAlphaAnimatable.value exportAs
-                                    BrightnessSliderMotionTestKeys.InactiveIconAlpha
+                },
+                onValueChangeFinished = {
+                    if (enabled) {
+                        if (!overriddenByAppState) {
+                            hapticsViewModel?.onValueChangeEnded()
+                            onStop(value)
+                        }
+                    }
+                },
+                modifier =
+                    Modifier
+                        .weight(1f)
+                        .sysuiResTag("slider")
+                        .semantics(mergeDescendants = true) {
+                            this.text = AnnotatedString(contentDescription)
+                        }
+                        .sliderPercentage {
+                            (value - valueRange.first).toFloat() / (valueRange.last - valueRange.first)
+                        }
+                        .thenIf(isRestricted) {
+                            Modifier.clickable {
+                                if (restriction is PolicyRestriction.Restricted) {
+                                    onRestrictedClick(restriction)
+                                }
                             }
-                            .height(dimensions.trackHeight)
-                            .drawWithCache {
-                                // Cache the track outline and the brush, they only depend on the
-                                // size/layout direction and not on the slider value.
-                                val trackPath =
-                                    RoundedCornerShape(trackCornerDp)
-                                        .createOutline(size, layoutDirection, this)
-                                        .toPath()
-                                val isRtl = layoutDirection == LayoutDirection.Rtl
-                                val gradientBrush: Brush? =
-                                    gradientColors?.horizontal(reversed = isRtl)
+                        },
+                interactionSource = interactionSource,
+                thumb = {
+                    SliderDefaults.Thumb(
+                        interactionSource = interactionSource,
+                        enabled = enabled,
+                        thumbSize = DpSize(dimensions.thumbWidth, dimensions.thumbHeight),
+                        colors = thumbColors,
+                    )
+                },
+                track = { sliderState ->
+                    var showIconActive by remember { mutableStateOf(true) }
+                    val iconActiveAlphaAnimatable = remember {
+                        Animatable(
+                            initialValue = 1f,
+                            typeConverter = Float.VectorConverter,
+                            label = "iconActiveAlpha",
+                        )
+                    }
 
-                                onDrawWithContent {
-                                    drawContent()
+                    val iconInactiveAlphaAnimatable = remember {
+                        Animatable(
+                            initialValue = 0f,
+                            typeConverter = Float.VectorConverter,
+                            label = "iconInactiveAlpha",
+                        )
+                    }
 
-                                    if (gradientBrush != null) {
-                                        val gapPx = ThumbTrackGapSize.toPx()
-                                        val activeWidth =
-                                            (size.width * sliderState.coercedValueAsFraction -
-                                                    gapPx)
-                                                .coerceIn(0f, size.width)
-                                        if (activeWidth > 0f) {
-                                            clipPath(trackPath) {
-                                                drawRect(
-                                                    brush = gradientBrush,
-                                                    topLeft =
-                                                        if (isRtl) {
-                                                            Offset(size.width - activeWidth, 0f)
-                                                        } else {
-                                                            Offset.Zero
-                                                        },
-                                                    size = Size(activeWidth, size.height),
-                                                )
+                    LaunchedEffect(
+                        iconActiveAlphaAnimatable,
+                        iconInactiveAlphaAnimatable,
+                        showIconActive,
+                    ) {
+                        if (showIconActive) {
+                            launch { iconActiveAlphaAnimatable.appear() }
+                            launch { iconInactiveAlphaAnimatable.disappear() }
+                        } else {
+                            launch { iconActiveAlphaAnimatable.disappear() }
+                            launch { iconInactiveAlphaAnimatable.appear() }
+                        }
+                    }
+
+                    SliderDefaults.Track(
+                        sliderState = sliderState,
+                        modifier =
+                            Modifier.motionTestValues {
+                                    iconActiveAlphaAnimatable.value exportAs
+                                        BrightnessSliderMotionTestKeys.ActiveIconAlpha
+                                    iconInactiveAlphaAnimatable.value exportAs
+                                        BrightnessSliderMotionTestKeys.InactiveIconAlpha
+                                }
+                                .height(dimensions.trackHeight)
+                                .drawWithCache {
+                                    // Cache the track outline and the brush, they only depend on the
+                                    // size/layout direction and not on the slider value.
+                                    val trackPath =
+                                        RoundedCornerShape(trackCornerDp)
+                                            .createOutline(size, layoutDirection, this)
+                                            .toPath()
+                                    val isRtl = layoutDirection == LayoutDirection.Rtl
+                                    val gradientBrush: Brush? =
+                                        gradientColors?.horizontal(reversed = isRtl)
+
+                                    onDrawWithContent {
+                                        drawContent()
+
+                                        if (gradientBrush != null) {
+                                            val gapPx = ThumbTrackGapSize.toPx()
+                                            val activeWidth =
+                                                (size.width * sliderState.coercedValueAsFraction -
+                                                        gapPx)
+                                                    .coerceIn(0f, size.width)
+                                            if (activeWidth > 0f) {
+                                                clipPath(trackPath) {
+                                                    drawRect(
+                                                        brush = gradientBrush,
+                                                        topLeft =
+                                                            if (isRtl) {
+                                                                Offset(size.width - activeWidth, 0f)
+                                                            } else {
+                                                                Offset.Zero
+                                                            },
+                                                        size = Size(activeWidth, size.height),
+                                                    )
+                                                }
                                             }
                                         }
+
+                                        val yOffset = size.height / 2 - iconSize.toSize().height / 2
+                                        val activeTrackStart = 0f
+                                        val activeTrackEnd =
+                                            size.width * sliderState.coercedValueAsFraction -
+                                                ThumbTrackGapSize.toPx()
+                                        val inactiveTrackStart =
+                                            activeTrackEnd + ThumbTrackGapSize.toPx() * 2
+                                        val inactiveTrackEnd = size.width
+
+                                        val activeTrackWidth = activeTrackEnd - activeTrackStart
+                                        val inactiveTrackWidth = inactiveTrackEnd - inactiveTrackStart
+
+                                        if (
+                                            iconSize.toSize().width <
+                                                inactiveTrackWidth - IconPadding.toPx() * 2
+                                        ) {
+                                            showIconActive = false
+                                            trackIcon(
+                                                Offset(inactiveTrackEnd, yOffset),
+                                                inactiveIconColor,
+                                                iconInactiveAlphaAnimatable.value,
+                                            )
+                                        } else if (
+                                            iconSize.toSize().width <
+                                                activeTrackWidth - IconPadding.toPx() * 2
+                                        ) {
+                                            showIconActive = true
+                                            trackIcon(
+                                                Offset(activeTrackEnd, yOffset),
+                                                activeIconColor,
+                                                iconActiveAlphaAnimatable.value,
+                                            )
+                                        }
                                     }
-
-                                    val yOffset = size.height / 2 - iconSize.toSize().height / 2
-                                    val activeTrackStart = 0f
-                                    val activeTrackEnd =
-                                        size.width * sliderState.coercedValueAsFraction -
-                                            ThumbTrackGapSize.toPx()
-                                    val inactiveTrackStart =
-                                        activeTrackEnd + ThumbTrackGapSize.toPx() * 2
-                                    val inactiveTrackEnd = size.width
-
-                                    val activeTrackWidth = activeTrackEnd - activeTrackStart
-                                    val inactiveTrackWidth = inactiveTrackEnd - inactiveTrackStart
-
-                                    if (
-                                        iconSize.toSize().width <
-                                            inactiveTrackWidth - IconPadding.toPx() * 2
-                                    ) {
-                                        showIconActive = false
-                                        trackIcon(
-                                            Offset(inactiveTrackEnd, yOffset),
-                                            inactiveIconColor,
-                                            iconInactiveAlphaAnimatable.value,
-                                        )
-                                    } else if (
-                                        iconSize.toSize().width <
-                                            activeTrackWidth - IconPadding.toPx() * 2
-                                    ) {
-                                        showIconActive = true
-                                        trackIcon(
-                                            Offset(activeTrackEnd, yOffset),
-                                            activeIconColor,
-                                            iconActiveAlphaAnimatable.value,
-                                        )
-                                    }
-                                }
-                            },
-                    trackCornerSize = trackCornerDp,
-                    trackInsideCornerSize = 2.dp,
-                    drawStopIndicator = null,
-                    thumbTrackGapSize = ThumbTrackGapSize,
-                    colors = colors,
-                )
-            },
-        )
-
-        if (hasAutoBrightness && showAutoBrightness) {
-            Spacer(modifier = Modifier.width(10.dp))
-            drawAutoBrightnessButton(
-                autoMode = autoMode,
-                onIconClick = onIconClick,
-                hapticsEnabled = hapticsEnabled,
-                gradientColors = gradientColors,
-                buttonSize = dimensions.thumbHeight,
+                                },
+                        trackCornerSize = trackCornerDp,
+                        trackInsideCornerSize = 2.dp,
+                        drawStopIndicator = null,
+                        thumbTrackGapSize = ThumbTrackGapSize,
+                        colors = colors,
+                    )
+                },
             )
+
+            if (hasAutoBrightness && showAutoBrightness) {
+                Spacer(modifier = Modifier.width(10.dp))
+                drawAutoBrightnessButton(
+                    autoMode = autoMode,
+                    onIconClick = onIconClick,
+                    hapticsEnabled = hapticsEnabled,
+                    gradientColors = gradientColors,
+                    buttonSize = dimensions.thumbHeight,
+                )
+            }
         }
     }
 
@@ -640,155 +686,176 @@ private fun VolumeSlider(
 
     val contentDescription = stringResource(R.string.stream_music)
 
+    val onVolumeChange: (Float) -> Unit = {
+        dragging = true
+        hapticsViewModel?.onValueChange(it)
+        val newValue = it.roundToInt().coerceIn(minVolume, safeMax)
+        if (newValue != value) {
+            value = newValue
+            setStreamVolume(audioManager, streamType, newValue)
+        }
+    }
+    val onVolumeChangeFinished: () -> Unit = {
+        hapticsViewModel?.onValueChangeEnded()
+        setStreamVolume(audioManager, streamType, value)
+        dragging = false
+    }
+
     Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier) {
-        Slider(
-            value = animatedValue,
-            valueRange = floatValueRange,
-            enabled = true,
-            colors = colors,
-            onValueChange = {
-                dragging = true
-                hapticsViewModel?.onValueChange(it)
-                val newValue = it.roundToInt().coerceIn(minVolume, safeMax)
-                if (newValue != value) {
-                    value = newValue
-                    setStreamVolume(audioManager, streamType, newValue)
-                }
-            },
-            onValueChangeFinished = {
-                hapticsViewModel?.onValueChangeEnded()
-                setStreamVolume(audioManager, streamType, value)
-                dragging = false
-            },
-            modifier =
-                Modifier.weight(1f)
-                    .sysuiResTag("volume_slider")
-                    .semantics(mergeDescendants = true) {
-                        this.text = AnnotatedString(contentDescription)
-                    }
-                    .sliderPercentage {
-                        (value - minVolume).toFloat() /
-                            (safeMax - minVolume).coerceAtLeast(1).toFloat()
-                    },
-            interactionSource = interactionSource,
-            thumb = {
-                SliderDefaults.Thumb(
-                    interactionSource = interactionSource,
-                    enabled = true,
-                    thumbSize = DpSize(dimensions.thumbWidth, dimensions.thumbHeight),
-                    colors = thumbColors,
-                )
-            },
-            track = { sliderState ->
-                var showIconActive by remember { mutableStateOf(true) }
-                val iconActiveAlphaAnimatable = remember {
-                    Animatable(
-                        initialValue = 1f,
-                        typeConverter = Float.VectorConverter,
-                        label = "volIconActiveAlpha",
+        if (LocalNothingQsStyle.current) {
+            NothingSlider(
+                value = animatedValue,
+                valueRange = floatValueRange,
+                enabled = true,
+                iconRes = iconRes,
+                iconDescription = null,
+                iconEnabled = false,
+                overriddenByAppState = false,
+                contentDescription = contentDescription,
+                onValueChange = onVolumeChange,
+                onValueChangeFinished = onVolumeChangeFinished,
+                onIconClick = {},
+                interactionSource = interactionSource,
+                modifier = Modifier.weight(1f).sysuiResTag("volume_slider"),
+            )
+        } else {
+            Slider(
+                value = animatedValue,
+                valueRange = floatValueRange,
+                enabled = true,
+                colors = colors,
+                onValueChange = onVolumeChange,
+                onValueChangeFinished = onVolumeChangeFinished,
+                modifier =
+                    Modifier.weight(1f)
+                        .sysuiResTag("volume_slider")
+                        .semantics(mergeDescendants = true) {
+                            this.text = AnnotatedString(contentDescription)
+                        }
+                        .sliderPercentage {
+                            (value - minVolume).toFloat() /
+                                (safeMax - minVolume).coerceAtLeast(1).toFloat()
+                        },
+                interactionSource = interactionSource,
+                thumb = {
+                    SliderDefaults.Thumb(
+                        interactionSource = interactionSource,
+                        enabled = true,
+                        thumbSize = DpSize(dimensions.thumbWidth, dimensions.thumbHeight),
+                        colors = thumbColors,
                     )
-                }
-                val iconInactiveAlphaAnimatable = remember {
-                    Animatable(
-                        initialValue = 0f,
-                        typeConverter = Float.VectorConverter,
-                        label = "volIconInactiveAlpha",
-                    )
-                }
-
-                LaunchedEffect(
-                    iconActiveAlphaAnimatable,
-                    iconInactiveAlphaAnimatable,
-                    showIconActive,
-                ) {
-                    if (showIconActive) {
-                        launch { iconActiveAlphaAnimatable.appear() }
-                        launch { iconInactiveAlphaAnimatable.disappear() }
-                    } else {
-                        launch { iconActiveAlphaAnimatable.disappear() }
-                        launch { iconInactiveAlphaAnimatable.appear() }
+                },
+                track = { sliderState ->
+                    var showIconActive by remember { mutableStateOf(true) }
+                    val iconActiveAlphaAnimatable = remember {
+                        Animatable(
+                            initialValue = 1f,
+                            typeConverter = Float.VectorConverter,
+                            label = "volIconActiveAlpha",
+                        )
                     }
-                }
+                    val iconInactiveAlphaAnimatable = remember {
+                        Animatable(
+                            initialValue = 0f,
+                            typeConverter = Float.VectorConverter,
+                            label = "volIconInactiveAlpha",
+                        )
+                    }
 
-                SliderDefaults.Track(
-                    sliderState = sliderState,
-                    modifier =
-                        Modifier.height(dimensions.trackHeight).drawWithCache {
-                            val trackPath =
-                                RoundedCornerShape(trackCornerDp)
-                                    .createOutline(size, layoutDirection, this)
-                                    .toPath()
-                            val isRtl = layoutDirection == LayoutDirection.Rtl
-                            val gradientBrush: Brush? =
-                                gradientColors?.horizontal(reversed = isRtl)
+                    LaunchedEffect(
+                        iconActiveAlphaAnimatable,
+                        iconInactiveAlphaAnimatable,
+                        showIconActive,
+                    ) {
+                        if (showIconActive) {
+                            launch { iconActiveAlphaAnimatable.appear() }
+                            launch { iconInactiveAlphaAnimatable.disappear() }
+                        } else {
+                            launch { iconActiveAlphaAnimatable.disappear() }
+                            launch { iconInactiveAlphaAnimatable.appear() }
+                        }
+                    }
 
-                            onDrawWithContent {
-                                drawContent()
+                    SliderDefaults.Track(
+                        sliderState = sliderState,
+                        modifier =
+                            Modifier.height(dimensions.trackHeight).drawWithCache {
+                                val trackPath =
+                                    RoundedCornerShape(trackCornerDp)
+                                        .createOutline(size, layoutDirection, this)
+                                        .toPath()
+                                val isRtl = layoutDirection == LayoutDirection.Rtl
+                                val gradientBrush: Brush? =
+                                    gradientColors?.horizontal(reversed = isRtl)
 
-                                if (gradientBrush != null) {
-                                    val gapPx = ThumbTrackGapSize.toPx()
-                                    val activeWidth =
-                                        (size.width * sliderState.coercedValueAsFraction - gapPx)
-                                            .coerceIn(0f, size.width)
-                                    if (activeWidth > 0f) {
-                                        clipPath(trackPath) {
-                                            drawRect(
-                                                brush = gradientBrush,
-                                                topLeft =
-                                                    if (isRtl) {
-                                                        Offset(size.width - activeWidth, 0f)
-                                                    } else {
-                                                        Offset.Zero
-                                                    },
-                                                size = Size(activeWidth, size.height),
-                                            )
+                                onDrawWithContent {
+                                    drawContent()
+
+                                    if (gradientBrush != null) {
+                                        val gapPx = ThumbTrackGapSize.toPx()
+                                        val activeWidth =
+                                            (size.width * sliderState.coercedValueAsFraction - gapPx)
+                                                .coerceIn(0f, size.width)
+                                        if (activeWidth > 0f) {
+                                            clipPath(trackPath) {
+                                                drawRect(
+                                                    brush = gradientBrush,
+                                                    topLeft =
+                                                        if (isRtl) {
+                                                            Offset(size.width - activeWidth, 0f)
+                                                        } else {
+                                                            Offset.Zero
+                                                        },
+                                                    size = Size(activeWidth, size.height),
+                                                )
+                                            }
                                         }
                                     }
+
+                                    val yOffset = size.height / 2 - iconSize.toSize().height / 2
+                                    val activeTrackStart = 0f
+                                    val activeTrackEnd =
+                                        size.width * sliderState.coercedValueAsFraction -
+                                            ThumbTrackGapSize.toPx()
+                                    val inactiveTrackStart =
+                                        activeTrackEnd + ThumbTrackGapSize.toPx() * 2
+                                    val inactiveTrackEnd = size.width
+
+                                    val activeTrackWidth = activeTrackEnd - activeTrackStart
+                                    val inactiveTrackWidth = inactiveTrackEnd - inactiveTrackStart
+
+                                    if (
+                                        iconSize.toSize().width <
+                                            inactiveTrackWidth - IconPadding.toPx() * 2
+                                    ) {
+                                        showIconActive = false
+                                        trackIcon(
+                                            Offset(inactiveTrackEnd, yOffset),
+                                            inactiveIconColor,
+                                            iconInactiveAlphaAnimatable.value,
+                                        )
+                                    } else if (
+                                        iconSize.toSize().width <
+                                            activeTrackWidth - IconPadding.toPx() * 2
+                                    ) {
+                                        showIconActive = true
+                                        trackIcon(
+                                            Offset(activeTrackEnd, yOffset),
+                                            activeIconColor,
+                                            iconActiveAlphaAnimatable.value,
+                                        )
+                                    }
                                 }
-
-                                val yOffset = size.height / 2 - iconSize.toSize().height / 2
-                                val activeTrackStart = 0f
-                                val activeTrackEnd =
-                                    size.width * sliderState.coercedValueAsFraction -
-                                        ThumbTrackGapSize.toPx()
-                                val inactiveTrackStart =
-                                    activeTrackEnd + ThumbTrackGapSize.toPx() * 2
-                                val inactiveTrackEnd = size.width
-
-                                val activeTrackWidth = activeTrackEnd - activeTrackStart
-                                val inactiveTrackWidth = inactiveTrackEnd - inactiveTrackStart
-
-                                if (
-                                    iconSize.toSize().width <
-                                        inactiveTrackWidth - IconPadding.toPx() * 2
-                                ) {
-                                    showIconActive = false
-                                    trackIcon(
-                                        Offset(inactiveTrackEnd, yOffset),
-                                        inactiveIconColor,
-                                        iconInactiveAlphaAnimatable.value,
-                                    )
-                                } else if (
-                                    iconSize.toSize().width <
-                                        activeTrackWidth - IconPadding.toPx() * 2
-                                ) {
-                                    showIconActive = true
-                                    trackIcon(
-                                        Offset(activeTrackEnd, yOffset),
-                                        activeIconColor,
-                                        iconActiveAlphaAnimatable.value,
-                                    )
-                                }
-                            }
-                        },
-                    trackCornerSize = trackCornerDp,
-                    trackInsideCornerSize = 2.dp,
-                    drawStopIndicator = null,
-                    thumbTrackGapSize = ThumbTrackGapSize,
-                    colors = colors,
-                )
-            },
-        )
+                            },
+                        trackCornerSize = trackCornerDp,
+                        trackInsideCornerSize = 2.dp,
+                        drawStopIndicator = null,
+                        thumbTrackGapSize = ThumbTrackGapSize,
+                        colors = colors,
+                    )
+                },
+            )
+        }
 
         if (showRinger) {
             Spacer(modifier = Modifier.width(10.dp))
@@ -1186,15 +1253,144 @@ private fun drawAutoBrightnessButton(
 }
 
 @Composable
+private fun NothingSlider(
+    value: Float,
+    valueRange: ClosedFloatingPointRange<Float>,
+    enabled: Boolean,
+    @DrawableRes iconRes: Int,
+    iconDescription: String?,
+    iconEnabled: Boolean,
+    overriddenByAppState: Boolean,
+    contentDescription: String,
+    onValueChange: (Float) -> Unit,
+    onValueChangeFinished: () -> Unit,
+    onIconClick: suspend () -> Unit,
+    interactionSource: MutableInteractionSource,
+    modifier: Modifier = Modifier,
+) {
+    val coroutineScope = rememberCoroutineScope()
+    val currentOnValueChange by rememberUpdatedState(onValueChange)
+    val currentOnValueChangeFinished by rememberUpdatedState(onValueChangeFinished)
+    val totalRange = (valueRange.endInclusive - valueRange.start).coerceAtLeast(1f)
+    val fraction = ((value - valueRange.start) / totalRange).coerceIn(0f, 1f)
+
+    val trackColor = NothingQsColors.sliderTrack
+    val fillColor = NothingQsColors.sliderFill
+    val sliderHeight = dimensionResource(R.dimen.qs_nothing_brightness_slider_height)
+
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(sliderHeight)
+            .clip(RoundedCornerShape(50))
+            .background(trackColor)
+            .semantics(mergeDescendants = true) {
+                this.text = AnnotatedString(contentDescription)
+            }
+            // The slider haptics only treat a change as made by the user after a drag interaction
+            // started, so report every touch to the interaction source. It is observed on the
+            // initial pass without consuming anything, so taps and drags below still work.
+            .pointerInput(enabled, overriddenByAppState, interactionSource) {
+                if (!enabled || overriddenByAppState) return@pointerInput
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    val start = DragInteraction.Start()
+                    interactionSource.tryEmit(start)
+                    do {
+                        val event = awaitPointerEvent(PointerEventPass.Final)
+                    } while (event.changes.any { it.pressed })
+                    interactionSource.tryEmit(DragInteraction.Stop(start))
+                }
+            }
+            .pointerInput(enabled, overriddenByAppState, valueRange) {
+                if (!enabled || overriddenByAppState) return@pointerInput
+                detectTapGestures { offset ->
+                    val newFraction = (offset.x / size.width).coerceIn(0f, 1f)
+                    val newValue = valueRange.start + newFraction * totalRange
+                    currentOnValueChange(newValue)
+                    currentOnValueChangeFinished()
+                }
+            }
+            .pointerInput(enabled, overriddenByAppState, valueRange) {
+                if (!enabled || overriddenByAppState) return@pointerInput
+                detectHorizontalDragGestures(
+                    onDragStart = { offset ->
+                        val newFraction = (offset.x / size.width).coerceIn(0f, 1f)
+                        val newValue = valueRange.start + newFraction * totalRange
+                        currentOnValueChange(newValue)
+                    },
+                    onHorizontalDrag = { change, _ ->
+                        change.consume()
+                        val newFraction = (change.position.x / size.width).coerceIn(0f, 1f)
+                        val newValue = valueRange.start + newFraction * totalRange
+                        currentOnValueChange(newValue)
+                    },
+                    onDragEnd = { currentOnValueChangeFinished() },
+                    onDragCancel = { currentOnValueChangeFinished() },
+                )
+            }
+    ) {
+        val totalWidth = maxWidth
+        val activeWidth = totalWidth * fraction
+
+        // Active progress fill
+        if (fraction > 0f) {
+            Box(
+                modifier = Modifier
+                    .width(activeWidth)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(50))
+                    .background(fillColor)
+            )
+        }
+
+        // Icon inside on the left
+        val iconTint =
+            if (fraction > 0.12f) NothingQsColors.sliderIconOnFill
+            else NothingQsColors.content
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .padding(start = { 14.dp.roundToPx() })
+                .size(36.dp)
+                .clip(CircleShape)
+                .clickable(enabled = iconEnabled) {
+                    coroutineScope.launch { onIconClick() }
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                painter = painterResource(iconRes),
+                contentDescription = iconDescription,
+                tint = iconTint,
+                modifier = Modifier.size(24.dp)
+            )
+        }
+    }
+}
+
+@Composable
 fun BrightnessSliderContainer(
     viewModel: BrightnessSliderViewModel,
     modifier: Modifier = Modifier,
     containerColors: ContainerColors,
     dimensions: BrightnessSliderDimensions = BrightnessSliderDimensions.Default,
+    part: SliderPart = SliderPart.Both,
 ) {
     val volumeSliderMode = rememberVolumeSliderMode()
-    val wantsBrightness = volumeSliderMode != VolumeSliderMode.VOLUME_ONLY
-    val wantsVolume = volumeSliderMode != VolumeSliderMode.OFF
+    // A single part ignores the volume slider mode, the caller decides where each one goes.
+    val wantsBrightness =
+        when (part) {
+            SliderPart.Both -> volumeSliderMode != VolumeSliderMode.VOLUME_ONLY
+            SliderPart.BrightnessOnly -> true
+            SliderPart.VolumeOnly -> false
+        }
+    val wantsVolume =
+        when (part) {
+            SliderPart.Both -> volumeSliderMode != VolumeSliderMode.OFF
+            SliderPart.BrightnessOnly -> false
+            SliderPart.VolumeOnly -> true
+        }
 
     val gamma = viewModel.currentBrightness.value
     // Ignore initial negative value, but keep rendering the volume slider if it is the only
@@ -1246,6 +1442,15 @@ fun BrightnessSliderContainer(
         DpSize(dimensions.backgroundFrameWidth, dimensions.backgroundFrameHeight)
 
     val isRestricted = restriction is PolicyRestriction.Restricted
+    val isNothingStyle = LocalNothingQsStyle.current
+    val nothingMaxContentWidth = rememberNothingQSMaxContentWidth()
+    // Cap the width here so the slider background and the mirror backdrop match the slider.
+    val nothingWidthCap =
+        if (isNothingStyle) {
+            Modifier.fillMaxWidth().wrapContentWidth().widthIn(max = nothingMaxContentWidth)
+        } else {
+            Modifier
+        }
 
     val brightnessSlider: @Composable () -> Unit = {
         BrightnessSlider(
@@ -1269,7 +1474,8 @@ fun BrightnessSliderContainer(
             },
             onIconClick = { viewModel.onIconClick() },
             modifier =
-                Modifier.borderOnFocus(
+                nothingWidthCap
+                    .borderOnFocus(
                         color = MaterialTheme.colorScheme.secondary,
                         cornerSize = CornerSize(trackCornerDp),
                     )
@@ -1305,7 +1511,8 @@ fun BrightnessSliderContainer(
         VolumeSlider(
             hapticsViewModelFactory = viewModel.hapticsViewModelFactory,
             modifier =
-                Modifier.borderOnFocus(
+                nothingWidthCap
+                    .borderOnFocus(
                         color = MaterialTheme.colorScheme.secondary,
                         cornerSize = CornerSize(trackCornerDp),
                     )
@@ -1358,6 +1565,16 @@ fun BrightnessSliderContainer(
             else -> volumeSlider()
         }
     }
+}
+
+/** Which sliders [BrightnessSliderContainer] draws. */
+enum class SliderPart {
+    /** Brightness and volume as chosen by the volume slider mode setting. */
+    Both,
+    /** Only the brightness slider. */
+    BrightnessOnly,
+    /** Only the volume slider. */
+    VolumeOnly,
 }
 
 private object VolumeSliderMode {

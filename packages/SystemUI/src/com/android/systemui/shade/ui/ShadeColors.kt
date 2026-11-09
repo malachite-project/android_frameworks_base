@@ -17,13 +17,20 @@
 
 package com.android.systemui.shade.ui
 
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.res.Configuration
+import android.database.ContentObserver
 import android.graphics.Color
+import android.os.Handler
+import android.os.Looper
 import android.os.UserHandle
 import android.provider.Settings
 import com.android.internal.graphics.ColorUtils
 import com.android.internal.graphics.cam.Cam
+import com.android.systemui.common.shared.colors.SurfaceEffectColors
 import com.android.systemui.res.R
 import kotlin.math.max
 import kotlin.math.min
@@ -32,6 +39,15 @@ import kotlin.math.roundToInt
 object ShadeColors {
 
     enum class Style { AOSP, GLASS, TINTED }
+
+    /** Value of [Settings.System.QS_PANEL_STYLE] for the ColorOS panel. */
+    private const val QS_PANEL_STYLE_COLOROS = 2
+
+    /** Value of [Settings.System.QS_PANEL_STYLE] for the Nothing panel. */
+    private const val QS_PANEL_STYLE_NOTHING = 3
+
+    /** Value of [Settings.System.QS_NOTHING_COLOR_STYLE] for the flat Nothing OS 5.0 colors. */
+    private const val NOTHING_COLOR_STYLE_FLAT = 1
 
     /**
      * All numbers are in CAM16/HCT space (tone = L*, 0..100), so the visual weight of each
@@ -67,6 +83,8 @@ object ShadeColors {
 
     @JvmStatic
     fun shadePanel(context: Context, blurSupported: Boolean, withScrim: Boolean): Int {
+        // The flat Nothing OS 5.0 style has an opaque panel, no blur or wallpaper showing
+        if (isNothingFlatPanel(context)) return context.getColor(R.color.nothing_os_panel)
         val s = spec(style(context), isNight(context))
             ?: return aospShadePanel(context, blurSupported, withScrim)
 
@@ -82,6 +100,7 @@ object ShadeColors {
 
     @JvmStatic
     fun notificationScrim(context: Context, blurSupported: Boolean): Int {
+        if (isNothingFlatPanel(context)) return context.getColor(R.color.nothing_os_surface)
         val s = spec(style(context), isNight(context))
             ?: return if (blurSupported) notificationScrimStandard(context)
             else notificationScrimFallback(context)
@@ -107,7 +126,7 @@ object ShadeColors {
         composited: Boolean,
     ): Int {
         val s = spec(style(context), isNight(context))
-        val card = if (s == null) {
+        val card = if (s == null && !isNothingFlatPanel(context)) {
             context.resources.getColor(
                 com.android.internal.R.color.customColorSurfaceEffect0, context.theme)
         } else {
@@ -126,6 +145,19 @@ object ShadeColors {
             Style.TINTED -> hct(context, spec(Style.TINTED, night)!!, 32f,
                 if (night) 60f else 99f, if (night) 0.22f else 0.6f)
         }
+    }
+
+    /**
+     * Opaque surface for notification rows and their footer when the shade cannot blur: the QS
+     * tile surface over the opaque panel, so the cards read as the same colour as the tiles.
+     */
+    @JvmStatic
+    fun fallbackCardSurface(context: Context): Int {
+        // The flat Nothing OS 5.0 panel sets its own opaque cards
+        if (isNothingFlatPanel(context)) return context.getColor(R.color.nothing_os_surface)
+        val s = spec(style(context), isNight(context))
+        val panel = if (s != null) fallbackPanel(context, s) else shadePanelFallback(context)
+        return ColorUtils.compositeColors(SurfaceEffectColors.surfaceEffect1(context), panel)
     }
 
     private fun fallbackPanel(context: Context, s: Spec): Int =
@@ -164,10 +196,75 @@ object ShadeColors {
         (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
             Configuration.UI_MODE_NIGHT_YES
 
+    @Volatile private var cachedStyle: Style? = null
+    @Volatile private var styleGeneration = 0
+    @Volatile private var observingStyle = false
+
     private fun style(context: Context): Style {
+        // The ColorOS QS panel draws its own glass, which only suits the clear shade, so it takes
+        // that style whatever the setting is. This is read here and not cached, so the style
+        // follows the panel style at once and the setting keeps the choice of the user.
+        if (isColorOSPanel(context)) return Style.GLASS
+        cachedStyle?.let { return it }
+        ensureObservingStyle(context)
+        val generation = styleGeneration
         val v = Settings.Secure.getIntForUser(
             context.contentResolver, Settings.Secure.SHADE_COLOR_STYLE, 0, UserHandle.USER_CURRENT)
-        return Style.entries.getOrElse(v) { Style.AOSP }
+        val style = Style.entries.getOrElse(v) { Style.AOSP }
+        if (generation == styleGeneration) cachedStyle = style
+        return style
+    }
+
+    /**
+     * Whether the Nothing panel has the flat panel and cards of the Nothing OS 5.0 color style.
+     * It sets them itself, so it goes before the shade color style. The translucent Nothing OS
+     * 5.0 style and the dark grey one keep the shade of the shade color style. Read here and not
+     * cached, like the panel style, so that it follows the settings at once.
+     */
+    private fun isNothingFlatPanel(context: Context): Boolean {
+        val resolver = context.contentResolver
+        return Settings.System.getIntForUser(
+            resolver, Settings.System.QS_PANEL_STYLE, 0, UserHandle.USER_CURRENT
+        ) == QS_PANEL_STYLE_NOTHING &&
+            Settings.System.getIntForUser(
+                resolver, Settings.System.QS_NOTHING_COLOR_STYLE, NOTHING_COLOR_STYLE_FLAT,
+                UserHandle.USER_CURRENT
+            ) == NOTHING_COLOR_STYLE_FLAT
+    }
+
+    private fun isColorOSPanel(context: Context): Boolean =
+        Settings.System.getIntForUser(
+            context.contentResolver, Settings.System.QS_PANEL_STYLE, 0, UserHandle.USER_CURRENT
+        ) == QS_PANEL_STYLE_COLOROS
+
+    private fun invalidateStyle() {
+        styleGeneration++
+        cachedStyle = null
+    }
+
+    @Synchronized
+    private fun ensureObservingStyle(context: Context) {
+        if (observingStyle) return
+        val app = context.applicationContext ?: context
+        val handler = Handler(Looper.getMainLooper())
+        app.contentResolver.registerContentObserver(
+            Settings.Secure.getUriFor(Settings.Secure.SHADE_COLOR_STYLE),
+            false,
+            object : ContentObserver(handler) {
+                override fun onChange(selfChange: Boolean) = invalidateStyle()
+            },
+            UserHandle.USER_ALL,
+        )
+        app.registerReceiverForAllUsers(
+            object : BroadcastReceiver() {
+                override fun onReceive(context: Context, intent: Intent) = invalidateStyle()
+            },
+            IntentFilter(Intent.ACTION_USER_SWITCHED),
+            null,
+            handler,
+            Context.RECEIVER_NOT_EXPORTED,
+        )
+        observingStyle = true
     }
 
     private fun aospShadePanel(context: Context, blurSupported: Boolean, withScrim: Boolean): Int =

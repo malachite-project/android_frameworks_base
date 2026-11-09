@@ -23,6 +23,8 @@ import com.android.systemui.qs.panels.shared.model.splitInRowsSequence
 import com.android.systemui.qs.panels.ui.viewmodel.EditTileViewModel
 import com.android.systemui.qs.shared.model.CategoryAndName
 
+import com.android.systemui.qs.pipeline.shared.TileSpec
+
 /** Represents an item from a grid associated with a row and a span */
 sealed interface GridCell {
     val row: Int
@@ -40,6 +42,7 @@ data class TileGridCell(
     override val width: Int,
     override val span: GridItemSpan = GridItemSpan(width),
     val column: Int,
+    val isQuad: Boolean = false,
 ) : GridCell, SizedTile<EditTileViewModel>, CategoryAndName by tile {
     val key: String = "${tile.tileSpec.spec}-$row"
 
@@ -47,15 +50,19 @@ data class TileGridCell(
         sizedTile: SizedTile<EditTileViewModel>,
         row: Int,
         column: Int,
-    ) : this(tile = sizedTile.tile, row = row, column = column, width = sizedTile.width)
+        isQuad: Boolean = false,
+    ) : this(tile = sizedTile.tile, row = row, column = column, width = sizedTile.width, isQuad = isQuad)
 }
 
 /** Represents an empty space used to fill incomplete rows. Will always display as a 1x1 tile */
 @Immutable
 data class SpacerGridCell(
     override val row: Int,
+    val column: Int = 0,
     override val span: GridItemSpan = GridItemSpan(1),
-) : GridCell
+) : GridCell {
+    val key: String = "spacer-$row-$column"
+}
 
 /**
  * Generates a list of [GridCell] from a list of [SizedTile]
@@ -64,27 +71,162 @@ data class SpacerGridCell(
  *
  * @param startingRow The row index the grid is built from, used in cases where only end rows need
  *   to be regenerated
+ * @param isNothingStyle Whether the NothingOS grid rules (quad tiles, preferred positions) apply.
+ *   Callers that do not pass it get the default sequential layout.
  */
 fun List<SizedTile<EditTileViewModel>>.toGridCells(
     columns: Int,
     startingRow: Int = 0,
+    quadTiles: Set<TileSpec> = emptySet(),
+    preferredPositions: Map<TileSpec, Pair<Int, Int>> = emptyMap(),
+    prioritySpec: TileSpec? = null,
+    isNothingStyle: Boolean = false,
+    blockedCells: Set<Pair<Int, Int>> = emptySet(),
 ): List<GridCell> {
-    return splitInRowsSequence(this, columns)
-        .flatMapIndexed { rowIndex, sizedTiles ->
-            val correctedRowIndex = rowIndex + startingRow
-            var column = 0
-            val row: List<GridCell> =
-                sizedTiles.map {
-                    TileGridCell(it, correctedRowIndex, column).also { cell ->
-                        column += cell.width
+    if (
+        !isNothingStyle ||
+            (quadTiles.isEmpty() && preferredPositions.isEmpty() && blockedCells.isEmpty())
+    ) {
+        return splitInRowsSequence(this, columns)
+            .flatMapIndexed { rowIndex, sizedTiles ->
+                val correctedRowIndex = rowIndex + startingRow
+                var column = 0
+                val row: List<GridCell> =
+                    sizedTiles.map {
+                        val isQuad = if (isNothingStyle) quadTiles.contains(it.tile.tileSpec) else false
+                        TileGridCell(it, correctedRowIndex, column, isQuad = isQuad).also { cell ->
+                            column += cell.width
+                        }
                     }
-                }
 
-            // Fill the incomplete rows with spacers
-            val numSpacers = columns - sizedTiles.sumOf { it.width }
-            row.toMutableList().apply {
-                repeat(numSpacers) { add(SpacerGridCell(correctedRowIndex)) }
+                // Fill the incomplete rows with spacers
+                val numSpacers = columns - sizedTiles.sumOf { it.width }
+                row.toMutableList().apply {
+                    repeat(numSpacers) { c -> add(SpacerGridCell(correctedRowIndex, column + c)) }
+                }
+            }
+            .toList()
+    }
+
+    val occupied = mutableListOf<BooleanArray>()
+    fun isOccupied(r: Int, c: Int): Boolean {
+        if (r >= occupied.size) return false
+        return occupied[r][c]
+    }
+    fun setOccupied(r: Int, c: Int) {
+        while (r >= occupied.size) {
+            occupied.add(BooleanArray(columns))
+        }
+        occupied[r][c] = true
+    }
+
+    // Cells held by something else, like a slider, are never given to a tile. They are not
+    // spacers either, so the cell stays empty in the result.
+    for ((blockedRow, blockedCol) in blockedCells) {
+        if (blockedRow - startingRow >= 0 && blockedCol in 0 until columns) {
+            setOccupied(blockedRow - startingRow, blockedCol)
+        }
+    }
+
+    val placedCells = mutableListOf<TileGridCell>()
+    val sortedTiles = if (prioritySpec != null) {
+        sortedByDescending { it.tile.tileSpec == prioritySpec }
+    } else {
+        this
+    }
+    for (sizedTile in sortedTiles) {
+        val spec = sizedTile.tile.tileSpec
+        val isQuad = quadTiles.contains(spec)
+        val colSpan = sizedTile.width.coerceIn(1, columns)
+        val rowSpan = if (isQuad) 2 else 1
+
+        var foundRow = -1
+        var foundCol = -1
+
+        val preferred = preferredPositions[spec]
+        if (preferred != null) {
+            val pr = preferred.first - startingRow
+            val pc = preferred.second
+            if (pr >= 0 && pc in 0..(columns - colSpan)) {
+                var canFit = true
+                for (dr in 0 until rowSpan) {
+                    for (dc in 0 until colSpan) {
+                        if (isOccupied(pr + dr, pc + dc)) {
+                            canFit = false
+                            break
+                        }
+                    }
+                    if (!canFit) break
+                }
+                if (canFit) {
+                    foundRow = pr
+                    foundCol = pc
+                }
             }
         }
-        .toList()
+
+        if (foundRow == -1) {
+            var r = 0
+            while (foundRow == -1) {
+                for (c in 0..(columns - colSpan)) {
+                    var canFit = true
+                    for (dr in 0 until rowSpan) {
+                        for (dc in 0 until colSpan) {
+                            if (isOccupied(r + dr, c + dc)) {
+                                canFit = false
+                                break
+                            }
+                        }
+                        if (!canFit) break
+                    }
+                    if (canFit) {
+                        foundRow = r
+                        foundCol = c
+                        break
+                    }
+                }
+                if (foundRow == -1) {
+                    r++
+                }
+            }
+        }
+
+        for (dr in 0 until rowSpan) {
+            for (dc in 0 until colSpan) {
+                setOccupied(foundRow + dr, foundCol + dc)
+            }
+        }
+
+        placedCells.add(
+            TileGridCell(sizedTile, foundRow + startingRow, foundCol, isQuad = isQuad)
+        )
+    }
+
+    val totalRows = occupied.size
+    val result = mutableListOf<GridCell>()
+    for (r in 0 until totalRows) {
+        var c = 0
+        while (c < columns) {
+            val tile = placedCells.find { it.row == (r + startingRow) && it.column == c }
+            if (tile != null) {
+                result.add(tile)
+                c += tile.width
+            } else if (isOccupied(r, c)) {
+                c++
+            } else {
+                result.add(SpacerGridCell(r + startingRow, c))
+                c++
+            }
+        }
+    }
+
+    if (isNothingStyle) {
+        for (r in totalRows until maxOf(4, totalRows)) {
+            for (c in 0 until columns) {
+                result.add(SpacerGridCell(r + startingRow, c))
+            }
+        }
+    }
+
+    return result
 }
