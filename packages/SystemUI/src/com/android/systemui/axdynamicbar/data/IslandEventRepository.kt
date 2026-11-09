@@ -15,13 +15,17 @@ import com.android.systemui.axdynamicbar.data.source.TorchIslandManager
 import com.android.systemui.axdynamicbar.domain.AxDynamicBarSettings
 import com.android.systemui.axdynamicbar.model.IslandEvent
 import com.android.systemui.dagger.SysUISingleton
+import com.android.systemui.dagger.qualifiers.Application
 import javax.inject.Inject
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.shareIn
 
 @SysUISingleton
 class IslandEventRepository
@@ -37,9 +41,15 @@ constructor(
     val smartspace: SmartspaceIslandManager,
     val aospChip: AospChipIslandManager,
     private val settings: AxDynamicBarSettings,
+    @Application private val applicationScope: CoroutineScope,
 ) {
     companion object {
         private const val TAG = "IslandEventRepository"
+
+        private fun sameIgnoringDrawables(a: IslandEvent, b: IslandEvent): Boolean =
+            a === b || a == b ||
+                (a.javaClass == b.javaClass && a.id == b.id &&
+                    a.withoutDrawables() == b.withoutDrawables())
 
         private fun StatusBarNotification.isMediaNotification(): Boolean {
             val extras = notification?.extras ?: return false
@@ -67,7 +77,13 @@ constructor(
         _indicationEvents.value = emptyMap()
     }
 
-    val events: Flow<List<IslandEvent>> = buildEventsFlow()
+    val events: Flow<List<IslandEvent>> =
+        buildEventsFlow()
+            .shareIn(
+                applicationScope,
+                SharingStarted.WhileSubscribed(replayExpirationMillis = 0),
+                replay = 1,
+            )
 
     private val disabled get() = settings.disabledEventTypes.value
 
@@ -167,12 +183,17 @@ constructor(
             torch.torchEvent,
             biometric.biometricEvent
         ) { call, t, bio ->
-                (if (isTypeEnabled("call")) call else emptyList()) +
+            val calls = if (isTypeEnabled("call")) call else emptyList()
+            // Blink flashlight on call toggles the torch at the configured rate. Each on
+            // transition shows up as a new "torch" event, which re-pins the chip and resets
+            // its state several times a second, so the call can't be answered or declined.
+            val ringing = calls.any { it.callType == "Phone:incoming" }
+            calls +
                 listOfNotNull(
-                    t?.takeIf { isTypeEnabled("torch") },
+                    t?.takeIf { isTypeEnabled("torch") && !ringing },
                     bio?.takeIf { isTypeEnabled("biometric_unlock") },
                 )
-            }
+        }
         val midGroup =
             combine(
                 media.mediaEvent,
@@ -246,9 +267,7 @@ constructor(
         return allEvents.map { events ->
             events.sorted()
         }.distinctUntilChanged { old, new ->
-            old.size == new.size && old.indices.all { i ->
-                old[i].withoutDrawables() == new[i].withoutDrawables()
-            }
+            old.size == new.size && old.indices.all { i -> sameIgnoringDrawables(old[i], new[i]) }
         }
     }
 }

@@ -7673,7 +7673,13 @@ public final class Settings {
         public static final String FORCE_FULLSCREEN_CUTOUT_APPS = "force_full_screen_cutout_apps";
 
         /**
-         * Defines the screen-off animation to display
+         * Defines the screen-off animation to display.
+         * 0 = Fade (stock ColorFade behaviour, default)
+         * 1 = CRT (ElectronBeam)
+         * 2 = Scale (ElectronBeam)
+         * 3 = Iris (ElectronBeam)
+         * 4 = Desaturate (ElectronBeam)
+         * 5 = Shutter (ElectronBeam)
          * @hide
          */
         public static final String SCREEN_OFF_ANIMATION = "screen_off_animation";
@@ -14829,6 +14835,12 @@ public final class Settings {
          * @hide
          */
         public static final String SHADE_COLOR_STYLE = "shade_color_style";
+
+        /**
+         * Whether to enable dark theme on battery saver mode
+         * @hide
+         */
+        public static final String BATTERY_SAVER_DARK_THEME = "battery_saver_dark_theme";
 
         /**
          * Keys we no longer back up under the current schema, but want to continue to

@@ -294,7 +294,7 @@ public class PhoneStatusBarPolicy
 
         // bluetooth status
         mShowBluetoothBattery = Settings.System.getIntForUser(mContext.getContentResolver(),
-            BLUETOOTH_SHOW_BATTERY, 1, UserHandle.USER_CURRENT) != 0;
+            Settings.System.BLUETOOTH_SHOW_BATTERY, 1, UserHandle.USER_CURRENT) != 0;
         updateBluetooth();
 
         // Alarm clock
@@ -353,11 +353,6 @@ public class PhoneStatusBarPolicy
 
         mIconController.setIconVisibility(mSlotNfc, false);
         updateNfc();
-
-        // network traffic
-        mShowNetworkTraffic = Settings.System.getIntForUser(mContext.getContentResolver(),
-            NETWORK_TRAFFIC_ENABLED, 0, UserHandle.USER_CURRENT) == 1;
-        mIconController.setNetworkTraffic(mSlotNetworkTraffic);
 
         mRotationLockController.addCallback(this);
         mBluetooth.addCallback(this);
