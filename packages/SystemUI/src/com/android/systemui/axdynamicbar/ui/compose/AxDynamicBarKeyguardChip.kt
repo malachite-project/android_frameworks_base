@@ -95,6 +95,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
@@ -114,6 +115,12 @@ import android.graphics.drawable.Drawable
 import java.util.Calendar
 
 private val ChipHeight = 36.dp
+// The keyguard battery chip used the smallest type token (PillPrimary ->
+// labelSmallEmphasized, 11sp) for every line, which made it visibly smaller than the AOD
+// date/weather line (widget_label_font_size, 16dp). Use 16sp for the whole chip content so
+// the readout and all of its secondary info match the other lines.
+private val BatteryChipText: TextStyle
+    @Composable get() = PillPrimary.copy(fontSize = 16.sp, lineHeight = 20.sp)
 private val ChipShape = ShapeChip
 private val ChipIconSize = ChipHeight - SpaceLg
 private val MusicChipHeight = 58.dp
@@ -239,25 +246,29 @@ fun AxDynamicBarKeyguardChip(
             exit = fadeOut(motionScheme.fastEffectsSpec()) + scaleOut(targetScale = 0.9f, animationSpec = motionScheme.fastSpatialSpec()),
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .pointerInput(viewModel) {
+                .pointerInput(viewModel, state?.event?.id) {
                     awaitEachGesture {
                         val down = awaitFirstDown(pass = PointerEventPass.Initial)
-                        val startX = down.position.x
+                        val start = down.position
                         var dragging = false
                         var totalDx = 0f
+                        var canceled = false
                         while (true) {
                             val event = awaitPointerEvent(PointerEventPass.Initial)
-                            val change = event.changes.firstOrNull() ?: break
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            val dx = change.position.x - start.x
+                            val dy = change.position.y - start.y
                             if (!change.pressed) {
-                                if (dragging) {
+                                if (dragging && !canceled && !change.isConsumed) {
                                     change.consume()
-                                    if (totalDx > 0) viewModel.cyclePrev()
+                                    if (totalDx > 0f) viewModel.cyclePrev()
                                     else viewModel.cycleNext()
                                 }
                                 break
                             }
-                            val dx = change.position.x - startX
-                            if (!dragging && abs(dx) > touchSlop) {
+                            if (change.isConsumed && !dragging) { canceled = true; break }
+                            if (!dragging && (abs(dx) > touchSlop || abs(dy) > touchSlop)) {
+                                if (abs(dy) >= abs(dx)) break
                                 dragging = true
                             }
                             if (dragging) {
@@ -686,14 +697,14 @@ private fun KeyguardBatteryChip(
                     ) {
                         Text(
                             parts[0],
-                            style = PillPrimary,
+                            style = BatteryChipText,
                             color = contentColor,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                         Text(
                             parts[1],
-                            style = TsCaption,
+                            style = BatteryChipText,
                             color = contentColor.copy(alpha = AlphaSecondary),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -702,7 +713,7 @@ private fun KeyguardBatteryChip(
                 } else {
                     Text(
                         if (parts.isNotEmpty()) parts[0] else batteryString,
-                        style = PillPrimary,
+                        style = BatteryChipText,
                         color = contentColor.copy(alpha = AlphaSecondary),
                         maxLines = 1,
                         overflow = TextOverflow.Clip,
@@ -716,26 +727,25 @@ private fun KeyguardBatteryChip(
                 val timeRemaining = info.timeRemaining
                 val tertiaryColor = contentColor.copy(alpha = AlphaTertiary)
                 val secondaryColor = contentColor.copy(alpha = AlphaSecondary)
-                val labelSmallFontSize = MaterialTheme.typography.labelSmall.fontSize
-                val pillPrimaryFontSize = PillPrimary.fontSize
-                val infoLine = remember(info.level, secondaryLabel, timeRemaining, contentColor, labelSmallFontSize, pillPrimaryFontSize) {
+                val infoFontSize = BatteryChipText.fontSize
+                val infoLine = remember(info.level, secondaryLabel, timeRemaining, contentColor, infoFontSize) {
                     buildAnnotatedString {
-                        withStyle(SpanStyle(color = contentColor, fontSize = pillPrimaryFontSize)) {
+                        withStyle(SpanStyle(color = contentColor, fontSize = infoFontSize)) {
                             append("${info.level}%")
                         }
                         if (secondaryLabel != null) {
-                            withStyle(SpanStyle(color = tertiaryColor, fontSize = labelSmallFontSize)) {
+                            withStyle(SpanStyle(color = tertiaryColor, fontSize = infoFontSize)) {
                                 append(" · ")
                             }
-                            withStyle(SpanStyle(color = secondaryColor, fontSize = labelSmallFontSize)) {
+                            withStyle(SpanStyle(color = secondaryColor, fontSize = infoFontSize)) {
                                 append(secondaryLabel)
                             }
                         }
                         if (timeRemaining != null) {
-                            withStyle(SpanStyle(color = tertiaryColor, fontSize = labelSmallFontSize)) {
+                            withStyle(SpanStyle(color = tertiaryColor, fontSize = infoFontSize)) {
                                 append(" · ")
                             }
-                            withStyle(SpanStyle(color = secondaryColor, fontSize = labelSmallFontSize)) {
+                            withStyle(SpanStyle(color = secondaryColor, fontSize = infoFontSize)) {
                                 append(timeRemaining)
                             }
                         }
@@ -745,7 +755,7 @@ private fun KeyguardBatteryChip(
                     infoLine,
                     maxLines = 1,
                     overflow = TextOverflow.Clip,
-                    modifier = Modifier.widthIn(max = 130.dp).basicMarquee(iterations = 1),
+                    modifier = Modifier.widthIn(max = 180.dp).basicMarquee(iterations = 1),
                 )
             }
         }
@@ -881,14 +891,14 @@ private fun KeyguardPrimaryText(event: IslandEvent, color: Color, modifier: Modi
                 Column(modifier = modifier, verticalArrangement = Arrangement.Center) {
                     Text(
                         parts[0],
-                        style = PillPrimary,
+                        style = BatteryChipText,
                         color = color,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
                         parts[1],
-                        style = TsCaption,
+                        style = BatteryChipText,
                         color = color.copy(alpha = AlphaSecondary),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,

@@ -18,13 +18,19 @@ package com.android.systemui.statusbar.quickactions.shared.model
 
 import android.content.Context
 import android.graphics.RectF
+import androidx.compose.ui.graphics.Color
 import com.android.systemui.common.shared.model.ContentDescription
 import com.android.systemui.common.shared.model.Icon
+import com.android.systemui.haptics.slider.compose.ui.SliderHapticsViewModel
 import com.android.systemui.statusbar.chips.ui.model.Chronometer
 import com.android.systemui.statusbar.quickactions.alarm.shared.model.AlarmPopupModel
+import com.android.systemui.statusbar.quickactions.charging.shared.model.ChargingPopupModel
 import com.android.systemui.statusbar.quickactions.flashlight.shared.model.FlashlightPopupModel
 import com.android.systemui.statusbar.quickactions.livescore.shared.model.LiveScoreChipModel
 import com.android.systemui.statusbar.quickactions.media.shared.model.MediaControlChipModel
+import com.android.systemui.statusbar.quickactions.popups.shared.model.BluetoothBatteryModel
+import com.android.systemui.statusbar.quickactions.popups.shared.model.PopupActionModel
+import com.android.systemui.statusbar.quickactions.popups.shared.model.SystemEventKind
 import com.android.systemui.statusbar.quickactions.popups.ui.viewmodel.StatusBarPopupViewModel
 import com.android.systemui.statusbar.quickactions.screenrecord.shared.model.ScreenRecordPopupModel
 import com.android.systemui.statusbar.quickactions.stopwatch.shared.model.StopwatchPopupModel
@@ -47,6 +53,11 @@ sealed class QuickActionChipId(val value: String) {
     data object Stopwatch : QuickActionChipId("Stopwatch")
 
     data object Alarm : QuickActionChipId("Alarm")
+
+    data object Charging : QuickActionChipId("Charging")
+
+    /** A system event such as a call or a connected device, identified by its event id. */
+    data class SystemEvent(val eventId: String) : QuickActionChipId("SystemEvent:$eventId")
 
     data object AvControlsIndicator : QuickActionChipId("AvControlsIndicator")
 
@@ -92,12 +103,54 @@ sealed interface PopupContentModel {
 
     data class LiveScore(val model: LiveScoreChipModel) : PopupContentModel
 
-    data class Flashlight(val model: FlashlightPopupModel) : PopupContentModel
+    data class Flashlight(
+        val model: FlashlightPopupModel,
+        val hapticsViewModelFactory: SliderHapticsViewModel.Factory,
+    ) : PopupContentModel
 
     data class Stopwatch(val model: StopwatchPopupModel) : PopupContentModel
 
     data class Alarm(val model: AlarmPopupModel) : PopupContentModel
+
+    data class Charging(val model: ChargingPopupModel) : PopupContentModel
+
+    data class SystemEvent(
+        val kind: SystemEventKind,
+        val title: String,
+        val text: String,
+        val actions: List<PopupActionModel>,
+        val progress: Float? = null,
+        /** Whether the progress has no known end, so the bar keeps moving instead of filling. */
+        val indeterminate: Boolean = false,
+        /** The app's own colour for the card, when the event comes from an app. */
+        val accent: Color? = null,
+        val icon: Icon? = null,
+        val prominentText: String? = null,
+        val image: Icon? = null,
+        val bluetoothBatteries: List<BluetoothBatteryModel> = emptyList(),
+        /** Wall-clock start of a connected call; shows a running timer in the popup. */
+        val callStartTimeMs: Long? = null,
+        /** Whether this is a call that is still ringing; the island opens its popup for it. */
+        val isRinging: Boolean = false,
+        /** Package of the app the event stands for, so it steps aside while that app is open. */
+        val ownerPackage: String? = null,
+        /** The in-call card's buttons, when the call offers them; null keeps the plain popup. */
+        val call: CallPopupModel? = null,
+    ) : PopupContentModel
 }
+
+/** The in-call card's buttons; a `null` action means the calling app doesn't offer it. */
+data class CallPopupModel(
+    val incoming: Boolean,
+    val connected: Boolean,
+    val onAnswer: (() -> Unit)?,
+    val onDecline: (() -> Unit)?,
+    val onEnd: (() -> Unit)?,
+    val speakerOn: Boolean,
+    val onSpeaker: (() -> Unit)?,
+    val muted: Boolean,
+    val onMute: (() -> Unit)?,
+)
 
 /** Model for individual status bar quick action chips. */
 sealed class QuickActionChipModel {
@@ -124,12 +177,21 @@ sealed class QuickActionChipModel {
         /** Icons shown on the chip when no specific hover behavior. */
         val icons: List<ChipIcon>,
         val chipContent: ChipContent? = null,
+        /**
+         * Text beside the icon, on the leading side of the camera. Fills the side that the single
+         * icon of a utility chip leaves empty.
+         */
+        val startText: String? = null,
+        /** Replaces the content color of a utility chip, e.g. to show the charging state. */
+        val contentTint: Color? = null,
         /** Determines the colors used for the chip. Defaults to system themed colors. */
         val colors: ChipColors = ChipColors.SystemTheme,
         val isPopupShown: Boolean = false,
         val togglePopup: (Context, RectF) -> Unit = { _, _ -> },
         val showPopup: () -> Unit = {},
         val hidePopup: () -> Unit = {},
+        /** Swipes the chip away until what it shows changes. */
+        val hide: () -> Unit = {},
         val contentDescription: ContentDescription? = null,
         val popupViewModelFactory: StatusBarPopupViewModel.Factory? = null,
         val popupContent: PopupContentModel = PopupContentModel.None,

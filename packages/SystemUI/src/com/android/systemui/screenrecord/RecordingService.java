@@ -82,6 +82,7 @@ public class RecordingService extends Service implements ScreenMediaRecorderList
     protected static final String EXTRA_PATH = "extra_path";
     private static final String EXTRA_AUDIO_SOURCE = "extra_useAudio";
     private static final String EXTRA_SHOW_TAPS = "extra_showTaps";
+    public static final String EXTRA_SHOW_FRONT_CAMERA = "extra_showFrontCamera";
     private static final String EXTRA_SHOW_SECONDS = "extra_showSeconds";
     private static final String EXTRA_CAPTURE_TARGET = "extra_captureTarget";
     private static final String EXTRA_DISPLAY_ID = "extra_displayId";
@@ -89,6 +90,7 @@ public class RecordingService extends Service implements ScreenMediaRecorderList
     private static final String EXTRA_LOW_QUALITY = "extra_lowQuality";
     private static final String EXTRA_LONGER_DURATION = "extra_longerDuration";
     private final static String EXTRA_HEVC = "extra_HEVC";
+    private static final String EXTRA_KEEP_SCREEN_AWAKE = "extra_keepScreenAwake";
 
     protected static final String ACTION_START = "com.android.systemui.screenrecord.START";
     protected static final String ACTION_SHOW_START_NOTIF =
@@ -121,6 +123,9 @@ public class RecordingService extends Service implements ScreenMediaRecorderList
     private boolean mLowQuality;
     private boolean mLongerDuration;
     private boolean mHEVC;
+    private boolean mKeepScreenAwake;
+    private android.os.PowerManager.WakeLock mWakeLock;
+    private ScreenRecordCameraOverlay mCameraOverlay;
 
     @Inject
     public RecordingService(ScreenRecordUxController controller, @LongRunning Executor executor,
@@ -155,6 +160,15 @@ public class RecordingService extends Service implements ScreenMediaRecorderList
             int audioSource, boolean showTaps,
             @Nullable MediaProjectionCaptureTarget captureTarget,
             boolean lowQuality, boolean longerDuration, boolean hevc) {
+        return getStartIntent(context, resultCode, audioSource, showTaps, captureTarget,
+                lowQuality, longerDuration, hevc, false);
+    }
+
+    public static Intent getStartIntent(Context context, int resultCode,
+            int audioSource, boolean showTaps,
+            @Nullable MediaProjectionCaptureTarget captureTarget,
+            boolean lowQuality, boolean longerDuration, boolean hevc,
+            boolean keepScreenAwake) {
         return new Intent(context, RecordingService.class)
                 .setAction(ACTION_START)
                 .putExtra(EXTRA_RESULT_CODE, resultCode)
@@ -163,7 +177,8 @@ public class RecordingService extends Service implements ScreenMediaRecorderList
                 .putExtra(EXTRA_CAPTURE_TARGET, captureTarget)
                 .putExtra(EXTRA_LOW_QUALITY, lowQuality)
                 .putExtra(EXTRA_LONGER_DURATION, longerDuration)
-                .putExtra(EXTRA_HEVC, hevc);
+                .putExtra(EXTRA_HEVC, hevc)
+                .putExtra(EXTRA_KEEP_SCREEN_AWAKE, keepScreenAwake);
     }
 
     /**
@@ -189,8 +204,23 @@ public class RecordingService extends Service implements ScreenMediaRecorderList
             boolean lowQuality,
             boolean longerDuration,
             boolean hevc) {
+        return getStartIntent(context, resultCode, audioSource, showTaps, displayId, captureTarget,
+                lowQuality, longerDuration, hevc, false);
+    }
+
+    public static Intent getStartIntent(
+            Context context,
+            int resultCode,
+            int audioSource,
+            boolean showTaps,
+            int displayId,
+            @Nullable MediaProjectionCaptureTarget captureTarget,
+            boolean lowQuality,
+            boolean longerDuration,
+            boolean hevc,
+            boolean keepScreenAwake) {
         return getStartIntent(context, resultCode, audioSource, showTaps, captureTarget, lowQuality,
-            longerDuration, hevc)
+            longerDuration, hevc, keepScreenAwake)
                 .putExtra(EXTRA_DISPLAY_ID, displayId);
     }
 
@@ -214,6 +244,7 @@ public class RecordingService extends Service implements ScreenMediaRecorderList
         UserHandle currentUser = new UserHandle(currentUserId);
         switch (action) {
             case ACTION_START:
+                stopCameraOverlay();
                 // Get a unique ID for this recording's notifications
                 mNotificationId = NOTIF_BASE_ID + (int) SystemClock.uptimeMillis();
                 mAudioSource = ScreenRecordingAudioSource
@@ -222,6 +253,7 @@ public class RecordingService extends Service implements ScreenMediaRecorderList
                 mLowQuality = intent.getBooleanExtra(EXTRA_LOW_QUALITY, false);
                 mLongerDuration = intent.getBooleanExtra(EXTRA_LONGER_DURATION, false);
                 mHEVC = intent.getBooleanExtra(EXTRA_HEVC, true);
+                mKeepScreenAwake = intent.getBooleanExtra(EXTRA_KEEP_SCREEN_AWAKE, false);
 
                 MediaProjectionCaptureTarget captureTarget =
                         intent.getParcelableExtra(EXTRA_CAPTURE_TARGET,
@@ -250,6 +282,8 @@ public class RecordingService extends Service implements ScreenMediaRecorderList
                 if (startRecording()) {
                     updateState(true);
                     createRecordingNotification();
+                    showCameraOverlay(captureTarget, displayId,
+                            intent.getBooleanExtra(EXTRA_SHOW_FRONT_CAMERA, false));
                     mUiEventLogger.log(Events.ScreenRecordEvent.SCREEN_RECORD_START);
                 } else {
                     updateState(false);
@@ -314,11 +348,19 @@ public class RecordingService extends Service implements ScreenMediaRecorderList
     public void onCreate() {
         super.onCreate();
         mController.addCallback((ScreenRecordUxController.StateChangeCallback) mBinder);
+        mWakeLock = getSystemService(android.os.PowerManager.class)
+                .newWakeLock(android.os.PowerManager.SCREEN_DIM_WAKE_LOCK
+                        | android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                        "SystemUI:ScreenRecord");
     }
 
     @Override
     public void onDestroy() {
+        stopCameraOverlay();
         mController.removeCallback((ScreenRecordUxController.StateChangeCallback) mBinder);
+        if (mWakeLock != null && mWakeLock.isHeld()) {
+            mWakeLock.release();
+        }
         super.onDestroy();
     }
 
@@ -338,6 +380,14 @@ public class RecordingService extends Service implements ScreenMediaRecorderList
             intent.putExtra(EXTRA_STATE, state);
             intent.addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY);
             sendBroadcast(intent, PERMISSION_SELF);
+        }
+        // manage wakelock based on state
+        if (mKeepScreenAwake && mWakeLock != null) {
+            if (state && !mWakeLock.isHeld()) {
+                mWakeLock.acquire();
+            } else if (!state && mWakeLock.isHeld()) {
+                mWakeLock.release();
+            }
         }
     }
 
@@ -531,7 +581,29 @@ public class RecordingService extends Service implements ScreenMediaRecorderList
                 getTag(), notificationIdForGroup, groupNotif, currentUser);
     }
 
+    /** Fullscreen recordings can draw a front-camera bubble. App captures must not. */
+    private void showCameraOverlay(
+            @Nullable MediaProjectionCaptureTarget captureTarget,
+            int displayId,
+            boolean showFrontCamera) {
+        if (captureTarget != null || !showFrontCamera || mCameraOverlay != null) {
+            return;
+        }
+        mCameraOverlay = new ScreenRecordCameraOverlay(
+                mUserContextTracker.getUserContext(), displayId);
+        mCameraOverlay.show();
+    }
+
+    private void stopCameraOverlay() {
+        if (mCameraOverlay == null) {
+            return;
+        }
+        mCameraOverlay.hide();
+        mCameraOverlay = null;
+    }
+
     private void stopService(int userId, @StopReason int stopReason) {
+        stopCameraOverlay();
         if (userId == USER_ID_NOT_SPECIFIED) {
             userId = mUserContextTracker.getUserContext().getUserId();
             Log.w(getTag(), "Stopping service without specifying user! " + userId);

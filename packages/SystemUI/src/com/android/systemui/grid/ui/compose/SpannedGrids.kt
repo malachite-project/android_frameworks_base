@@ -340,3 +340,274 @@ private fun calculateCellsCrossAxisSize(
         outArray[index] = slotSize + if (index < remainingPixels) 1 else 0
     }
 }
+
+data class GridSpan(val colSpan: Int, val rowSpan: Int)
+
+data class PlacedGridItem(
+    val index: Int,
+    val row: Int,
+    val col: Int,
+    val colSpan: Int,
+    val rowSpan: Int,
+)
+
+fun calculate2DPlacements(
+    spans: List<GridSpan>,
+    columns: Int,
+    maxRowsPerPage: Int = 0,
+    maxRows: Int = 0,
+    preferredPlacements: Map<Int, Pair<Int, Int>>? = null,
+    reserved: List<PlacedGridItem> = emptyList(),
+): List<PlacedGridItem> {
+    val occupied = mutableListOf<BooleanArray>()
+    fun isOccupied(r: Int, c: Int): Boolean {
+        if (r >= occupied.size) return false
+        return occupied[r][c]
+    }
+    fun setOccupied(r: Int, c: Int) {
+        while (r >= occupied.size) {
+            occupied.add(BooleanArray(columns))
+        }
+        occupied[r][c] = true
+    }
+
+    // Cells held by items the caller places itself. They are not part of the result and do not
+    // move the search start row, so the other items still flow from the top around them.
+    for (item in reserved) {
+        for (dr in 0 until item.rowSpan) {
+            for (dc in 0 until item.colSpan) {
+                if (item.col + dc in 0 until columns) setOccupied(item.row + dr, item.col + dc)
+            }
+        }
+    }
+
+    val result = ArrayList<PlacedGridItem>(spans.size)
+    var minRow = 0
+    for (i in spans.indices) {
+        val span = spans[i]
+        val colSpan = span.colSpan.coerceIn(1, columns)
+        val rowSpan = span.rowSpan.coerceAtLeast(1)
+
+        if (maxRows > 0 && rowSpan > maxRows) {
+            continue
+        }
+
+        var foundRow = -1
+        var foundCol = -1
+
+        val preferred = preferredPlacements?.get(i)
+        if (preferred != null) {
+            val pr = preferred.first
+            val pc = preferred.second
+            if (pc in 0..(columns - colSpan) && (maxRows == 0 || pr + rowSpan <= maxRows)) {
+                if (maxRowsPerPage == 0 || (pr % maxRowsPerPage) + rowSpan <= maxRowsPerPage) {
+                    var canFit = true
+                    for (dr in 0 until rowSpan) {
+                        for (dc in 0 until colSpan) {
+                            if (isOccupied(pr + dr, pc + dc)) {
+                                canFit = false
+                                break
+                            }
+                        }
+                        if (!canFit) break
+                    }
+                    if (canFit) {
+                        foundRow = pr
+                        foundCol = pc
+                    }
+                }
+            }
+        }
+
+        if (foundRow == -1) {
+            var r = minRow
+            while (foundRow == -1) {
+                if (maxRows > 0 && r + rowSpan > maxRows) {
+                    break
+                }
+                if (maxRowsPerPage > 0 && (r % maxRowsPerPage) + rowSpan > maxRowsPerPage) {
+                    r = (r / maxRowsPerPage + 1) * maxRowsPerPage
+                    if (maxRows > 0 && r + rowSpan > maxRows) {
+                        break
+                    }
+                }
+                for (c in 0..(columns - colSpan)) {
+                    var canFit = true
+                    for (dr in 0 until rowSpan) {
+                        for (dc in 0 until colSpan) {
+                            if (isOccupied(r + dr, c + dc)) {
+                                canFit = false
+                                break
+                            }
+                        }
+                        if (!canFit) break
+                    }
+                    if (canFit) {
+                        foundRow = r
+                        foundCol = c
+                        break
+                    }
+                }
+                if (foundRow == -1) {
+                    r++
+                }
+            }
+        }
+
+        if (foundRow != -1) {
+            for (dr in 0 until rowSpan) {
+                for (dc in 0 until colSpan) {
+                    setOccupied(foundRow + dr, foundCol + dc)
+                }
+            }
+            minRow = foundRow
+            result.add(PlacedGridItem(i, foundRow, foundCol, colSpan, rowSpan))
+        }
+    }
+    return result
+}
+
+
+/**
+ * 2D Spanned Grid supporting both variable column spans and multi-row spans.
+ */
+@Composable
+fun TwoDimensionalSpannedGrid(
+    columns: Int,
+    columnSpacing: Dp,
+    rowSpacing: Dp,
+    spans: List<GridSpan>,
+    customPlacements: List<PlacedGridItem>? = null,
+    preferredPlacements: Map<Int, Pair<Int, Int>>? = null,
+    maxRows: Int = 0,
+    rowHeight: Dp = Dp.Unspecified,
+    rowHeights: Map<Int, Dp> = emptyMap(),
+    useSquareCells: Boolean = false,
+    horizontalPadding: Dp = 0.dp,
+    targetCellSize: Dp = Dp.Unspecified,
+    maxCellSize: Dp = Dp.Unspecified,
+    modifier: Modifier = Modifier,
+    keys: (index: Int) -> Any = { it },
+    content: @Composable BoxScope.(index: Int, placement: PlacedGridItem) -> Unit,
+) {
+    val placements = customPlacements ?: remember(spans, columns, preferredPlacements, maxRows) {
+        calculate2DPlacements(spans, columns, preferredPlacements = preferredPlacements, maxRows = maxRows)
+    }
+    val totalRows = remember(placements) {
+        placements.maxOfOrNull { it.row + it.rowSpan } ?: 0
+    }
+
+    Layout(
+        content = {
+            placements.forEachIndexed { i, placement ->
+                key(keys(placement.index)) {
+                    Box(
+                        Modifier.semantics {
+                            collectionItemInfo = CollectionItemInfo(
+                                placement.row, placement.rowSpan,
+                                placement.col, placement.colSpan,
+                            )
+                        }
+                    ) {
+                        content(placement.index, placement)
+                    }
+                }
+            }
+        },
+        modifier = modifier.semantics { collectionInfo = CollectionInfo(totalRows, columns) },
+    ) { measurables, constraints ->
+        val totalWidth = constraints.maxWidth
+        check(totalWidth != Constraints.Infinity) { "Width must be constrained" }
+
+        val colSpacingPx = columnSpacing.roundToPx()
+        val rowSpacingPx = rowSpacing.roundToPx()
+
+        val targetCellSizePx = if (targetCellSize != Dp.Unspecified) targetCellSize.roundToPx() else 0
+        val maxCellSizePx =
+            if (maxCellSize != Dp.Unspecified && maxCellSize > 0.dp) maxCellSize.roundToPx() else 0
+        val cellSizeLimitPx = if (targetCellSizePx > 0) targetCellSizePx else maxCellSizePx
+        val baseHPaddingPx = horizontalPadding.roundToPx()
+        val hPaddingPx = if (cellSizeLimitPx > 0) {
+            val contentW = columns * cellSizeLimitPx + (columns - 1) * colSpacingPx
+            maxOf(baseHPaddingPx, (totalWidth - contentW) / 2)
+        } else {
+            baseHPaddingPx
+        }
+
+        val availableWidth = totalWidth - 2 * hPaddingPx - (columns - 1) * colSpacingPx
+        val baseColWidth = availableWidth / columns
+        val remainder = availableWidth % columns
+
+        val rowHeightPx = if (targetCellSizePx > 0) {
+            targetCellSizePx
+        } else if (useSquareCells || rowHeight == Dp.Unspecified) {
+            baseColWidth
+        } else {
+            rowHeight.roundToPx()
+        }
+
+        // Rows in [rowHeights] have their own height, every other row uses rowHeightPx.
+        val rowHeightsPx = IntArray(totalRows) { r ->
+            rowHeights[r]?.roundToPx() ?: rowHeightPx
+        }
+        val rowTops = IntArray(totalRows)
+        var rowTop = 0
+        for (r in 0 until totalRows) {
+            rowTops[r] = rowTop
+            rowTop += rowHeightsPx[r] + rowSpacingPx
+        }
+        fun heightOf(placement: PlacedGridItem): Int {
+            val last = placement.row + placement.rowSpan - 1
+            return rowTops[last] + rowHeightsPx[last] - rowTops[placement.row]
+        }
+
+        val colWidths = IntArray(columns) { c ->
+            baseColWidth + if (c < remainder) 1 else 0
+        }
+        val colPositions = IntArray(columns)
+        var curX = hPaddingPx
+        for (c in 0 until columns) {
+            colPositions[c] = curX
+            curX += colWidths[c] + colSpacingPx
+        }
+
+        val placeables = measurables.mapIndexed { i, measurable ->
+            val placement = placements[i]
+            var itemWidth = 0
+            for (c in placement.col until (placement.col + placement.colSpan)) {
+                itemWidth += colWidths[c]
+            }
+            itemWidth += (placement.colSpan - 1) * colSpacingPx
+            val itemHeight = heightOf(placement)
+
+            val (finalWidth, finalHeight) = if (useSquareCells && placement.colSpan == 1 && placement.rowSpan == 1) {
+                val s = minOf(itemWidth, itemHeight)
+                s to s
+            } else {
+                itemWidth to itemHeight
+            }
+
+            measurable.measure(
+                Constraints.fixed(finalWidth, finalHeight)
+            )
+        }
+
+        val totalHeight = if (totalRows == 0) 0 else rowTops[totalRows - 1] + rowHeightsPx[totalRows - 1]
+
+        layout(totalWidth, totalHeight) {
+            placeables.forEachIndexed { i, placeable ->
+                val placement = placements[i]
+                var slotWidth = 0
+                for (c in placement.col until (placement.col + placement.colSpan)) {
+                    slotWidth += colWidths[c]
+                }
+                slotWidth += (placement.colSpan - 1) * colSpacingPx
+                val slotHeight = heightOf(placement)
+
+                val x = colPositions[placement.col] + (slotWidth - placeable.width) / 2
+                val y = rowTops[placement.row] + (slotHeight - placeable.height) / 2
+                placeable.placeRelative(x, y)
+            }
+        }
+    }
+}

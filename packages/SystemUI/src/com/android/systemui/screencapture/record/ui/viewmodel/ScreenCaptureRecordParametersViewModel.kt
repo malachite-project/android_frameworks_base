@@ -21,7 +21,6 @@ import androidx.compose.runtime.getValue
 import com.android.internal.logging.UiEventLogger
 import com.android.systemui.lifecycle.HydratedActivatable
 import com.android.systemui.screencapture.record.camera.domain.interactor.ScreenCaptureCameraHintInteractor
-import com.android.systemui.screencapture.record.camera.domain.interactor.ScreenRecordCameraInteractor
 import com.android.systemui.screencapture.record.domain.interactor.ScreenCaptureRecordFeaturesInteractor
 import com.android.systemui.screencapture.record.domain.interactor.ScreenCaptureRecordParametersInteractor
 import com.android.systemui.screencapture.record.shared.model.ScreenRecordEvent
@@ -31,7 +30,6 @@ import com.android.systemui.screenrecord.ScreenRecordingAudioSource
 import com.android.systemui.screenrecord.domain.interactor.ScreenRecordingServiceInteractor
 import dagger.assisted.AssistedFactory
 import dagger.assisted.AssistedInject
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 
@@ -40,7 +38,6 @@ class ScreenCaptureRecordParametersViewModel
 constructor(
     private val screenRecordingServiceInteractor: ScreenRecordingServiceInteractor,
     private val interactor: ScreenCaptureRecordParametersInteractor,
-    screenRecordCameraInteractor: ScreenRecordCameraInteractor,
     screenCaptureRecordFeaturesInteractor: ScreenCaptureRecordFeaturesInteractor,
     recordDetailsTargetInteractor: RecordDetailsTargetInteractor,
     private val screenCaptureCameraHintInteractor: ScreenCaptureCameraHintInteractor,
@@ -78,6 +75,8 @@ constructor(
     val longerDuration: Boolean by interactor::longerDuration
 
     val hevc: Boolean by interactor::hevc
+
+    val keepScreenAwake: Boolean by interactor::keepScreenAwake
 
     var shouldRecordDevice: Boolean
         get() =
@@ -131,12 +130,7 @@ constructor(
 
     val canUseFrontCamera: Boolean by
         if (screenCaptureRecordFeaturesInteractor.isSelfieAvailable) {
-                combine(
-                    recordDetailsTargetInteractor.model.map { it.currentTargetModel.canUseCamera },
-                    screenRecordCameraInteractor.isCameraSupported,
-                ) { canUseCameraForTarget, isCameraSupported ->
-                    canUseCameraForTarget && isCameraSupported
-                }
+                recordDetailsTargetInteractor.model.map { it.currentTargetModel.canUseCamera }
             } else {
                 flowOf(false)
             }
@@ -160,6 +154,10 @@ constructor(
 
     fun setHevc(hevc: Boolean) {
         interactor.hevc = hevc
+    }
+
+    fun setKeepScreenAwake(keepScreenAwake: Boolean) {
+        interactor.keepScreenAwake = keepScreenAwake
     }
 
     @AssistedFactory

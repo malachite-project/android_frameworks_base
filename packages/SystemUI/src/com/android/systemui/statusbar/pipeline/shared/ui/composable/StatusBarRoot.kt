@@ -23,6 +23,7 @@ import android.content.Context
 import android.graphics.Rect
 import android.graphics.RenderEffect
 import android.graphics.Shader
+import android.view.Display
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
@@ -42,6 +43,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
@@ -51,6 +53,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.MutableIntState
 import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -142,11 +145,16 @@ import com.android.systemui.statusbar.quickactions.shared.model.QuickActionChipI
 import com.android.systemui.statusbar.quickactions.shared.model.QuickActionChipModel
 import com.android.systemui.statusbar.quickactions.ui.compose.QuickActionChipsContainer
 import com.android.systemui.statusbar.quickactions.popups.shared.DynamicIslandFeatureSettings
+import com.android.systemui.statusbar.quickactions.ui.DynamicIslandSideEdgeHost
 import com.android.systemui.statusbar.quickactions.ui.compose.DynamicIslandAnchor
+import com.android.systemui.statusbar.quickactions.ui.compose.DynamicIslandEdge
 import com.android.systemui.statusbar.quickactions.ui.compose.StatusBarDynamicIslandContainer
 import com.android.systemui.statusbar.quickactions.ui.compose.dynamicIslandHoleRect
 import com.android.systemui.statusbar.quickactions.ui.compose.dynamicIslandStartEdgePx
+import com.android.systemui.statusbar.quickactions.ui.compose.dynamicIslandAvoidsAppHandles
+import com.android.systemui.statusbar.quickactions.ui.compose.dynamicIslandCameraCenterOffsetYPx
 import com.android.systemui.statusbar.quickactions.ui.compose.resolveDynamicIslandAnchor
+import com.android.systemui.statusbar.quickactions.ui.compose.resolveDynamicIslandCutoutEdge
 import com.android.systemui.statusbar.pipeline.shared.ui.view.SystemStatusIconsLayoutHelper
 import com.android.systemui.statusbar.pipeline.shared.ui.viewmodel.HomeStatusBarViewModel
 import com.android.systemui.statusbar.pipeline.shared.ui.viewmodel.HomeStatusBarViewModel.HomeStatusBarViewModelFactory
@@ -404,9 +412,12 @@ fun StatusBarRoot(
 
                 // Add a composable container for `QuickActionChip`s (Music Ticker, etc.)
                 val centeredArea =
-                    phoneStatusBarView.requireViewById<AlphaOptimizedLinearLayout>(
-                        R.id.centered_area
-                    )
+                    phoneStatusBarView
+                        .requireViewById<AlphaOptimizedLinearLayout>(R.id.centered_area)
+                        .apply {
+                            clipChildren = false
+                            clipToPadding = false
+                        }
 
                 var islandExpanded = false
                 var lastIslandBoundsReported = Rect()
@@ -422,8 +433,14 @@ fun StatusBarRoot(
                     )
                 }
 
+                // Edge holding the camera. Anything but TOP means the island is docked to a side
+                // camera by [sideEdgeHost] and this status bar copy stays out of composition.
+                val islandEdgeState = mutableStateOf(DynamicIslandEdge.TOP)
+
                 val composeView =
                     ComposeView(context).apply {
+                        clipChildren = false
+                        clipToPadding = false
                         layoutParams =
                             LinearLayout.LayoutParams(
                                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -441,26 +458,74 @@ fun StatusBarRoot(
                         )
 
                         setContent {
-                            StatusBarDynamicIslandContainer(
-                                chips = statusBarViewModel.popupChips.filterIsInstance<QuickActionChipModel.PopupChip>(),
-                                onMediaControlPopupVisibilityChanged = {},
-                                onIslandActiveChanged = { active ->
-                                    this@apply.visibility =
-                                        if (active) View.VISIBLE else View.GONE
-                                },
-                                onIslandExpandedChanged = { expanded ->
-                                    islandExpanded = expanded
+                            if (islandEdgeState.value == DynamicIslandEdge.TOP) {
+                                val island =
+                                    @Composable {
+                                        StatusBarDynamicIslandContainer(
+                                            chips = statusBarViewModel.popupChips.filterIsInstance<QuickActionChipModel.PopupChip>(),
+                                            onMediaControlPopupVisibilityChanged = {},
+                                            onIslandActiveChanged = { active ->
+                                                this@apply.visibility =
+                                                    if (active) View.VISIBLE else View.GONE
+                                            },
+                                            onIslandExpandedChanged = { expanded ->
+                                                islandExpanded = expanded
+                                                publishIslandBounds()
+                                                islandExpandedHandler(expanded)
+                                            },
+                                            onIslandBoundsChanged = { bounds ->
+                                                lastIslandBoundsReported = bounds
+                                                publishIslandBounds()
+                                            },
+                                            appHandleBounds = appHandlesViewModel.appHandleBounds,
+                                        )
+                                    }
+                                // A tablet island may step beside an app handle. Span the status
+                                // bar so it stays inside this view and keeps receiving taps; empty
+                                // space passes touches through to the status bar below.
+                                val spanStatusBar = dynamicIslandAvoidsAppHandles()
+                                SideEffect {
+                                    val width =
+                                        if (spanStatusBar) {
+                                            ViewGroup.LayoutParams.MATCH_PARENT
+                                        } else {
+                                            ViewGroup.LayoutParams.WRAP_CONTENT
+                                        }
+                                    val params = this@apply.layoutParams
+                                    if (params != null && params.width != width) {
+                                        params.width = width
+                                        this@apply.layoutParams = params
+                                    }
+                                }
+                                if (spanStatusBar) {
+                                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                        island()
+                                    }
+                                } else {
+                                    island()
+                                }
+                            } else {
+                                SideEffect {
+                                    this@apply.visibility = View.GONE
+                                    lastIslandBoundsReported = Rect()
                                     publishIslandBounds()
-                                    islandExpandedHandler(expanded)
-                                },
-                                onIslandBoundsChanged = { bounds ->
-                                    lastIslandBoundsReported = bounds
-                                    publishIslandBounds()
-                                },
-                            )
+                                }
+                            }
                         }
                     }
                 centeredArea.addView(composeView)
+
+                // Same island, in its own window, for a camera on the left or right edge.
+                val sideEdgeHost =
+                    DynamicIslandSideEdgeHost(context) { edge, onBoundsChanged, onActiveChanged ->
+                        StatusBarDynamicIslandContainer(
+                            chips = statusBarViewModel.popupChips.filterIsInstance<QuickActionChipModel.PopupChip>(),
+                            onMediaControlPopupVisibilityChanged = {},
+                            onIslandActiveChanged = onActiveChanged,
+                            onIslandBoundsChanged = onBoundsChanged,
+                            sideEdge = edge,
+                        )
+                    }
 
                 val startSideHost =
                     phoneStatusBarView.requireViewById<LinearLayout>(
@@ -470,6 +535,9 @@ fun StatusBarRoot(
 
                 var islandCorrections = 0
                 var islandOffsetXPx = 0f
+                // Vertical shift that puts the island on the camera when the camera is not at the
+                // vertical centre of the status bar; the user's offset is applied on top of it.
+                var islandAutoOffsetYPx = 0f
                 val islandResolver = context.contentResolver
 
                 fun applyIslandOffset() {
@@ -479,9 +547,13 @@ fun StatusBarRoot(
                         }
                     composeView.translationX = islandOffsetXPx
                     composeView.translationY =
-                        with(DynamicIslandFeatureSettings) {
-                            islandResolver.readDynamicIslandOffsetPx(OFFSET_Y_DP10, islandDensity)
-                        }
+                        islandAutoOffsetYPx +
+                            with(DynamicIslandFeatureSettings) {
+                                islandResolver.readDynamicIslandOffsetPx(
+                                    OFFSET_Y_DP10,
+                                    islandDensity,
+                                )
+                            }
                 }
 
                 var islandReleaseFraction = 0f
@@ -521,6 +593,52 @@ fun StatusBarRoot(
                 fun placeIsland() {
                     val windowWidth = phoneStatusBarView.rootView.width
                     if (windowWidth <= 0) return
+                    // Camera on the left/right edge (landscape): dock the island to it in its own
+                    // window instead of centering it in the status bar, away from the camera.
+                    // With the landscape-top switch on, leave it in the status bar instead.
+                    val keepOnTop =
+                        with(DynamicIslandFeatureSettings) {
+                            islandResolver.readDynamicIslandFeatureEnabled(
+                                LANDSCAPE_TOP,
+                                defaultValue = true,
+                            )
+                        }
+                    val sideEdge =
+                        resolveDynamicIslandCutoutEdge(phoneStatusBarView)?.takeIf {
+                            !keepOnTop &&
+                                it.edge != DynamicIslandEdge.TOP &&
+                                phoneStatusBarView.display?.displayId == Display.DEFAULT_DISPLAY
+                        }
+                    islandEdgeState.value = sideEdge?.edge ?: DynamicIslandEdge.TOP
+                    if (sideEdge != null) {
+                        if (phoneStatusBarView.isAttachedToWindow && phoneStatusBarView.isShown) {
+                            val sideOffsetX =
+                                with(DynamicIslandFeatureSettings) {
+                                    islandResolver.readDynamicIslandOffsetPx(
+                                        OFFSET_X_DP10,
+                                        islandDensity,
+                                    )
+                                }
+                            val sideOffsetY =
+                                with(DynamicIslandFeatureSettings) {
+                                    islandResolver.readDynamicIslandOffsetPx(
+                                        OFFSET_Y_DP10,
+                                        islandDensity,
+                                    )
+                                }
+                            sideEdgeHost.show(
+                                sideEdge,
+                                sideEdge.rotateOffset(
+                                    sideOffsetX.roundToInt(),
+                                    sideOffsetY.roundToInt(),
+                                ),
+                            )
+                        } else {
+                            sideEdgeHost.hide()
+                        }
+                        return
+                    }
+                    sideEdgeHost.hide()
                     val displayCutout =
                         phoneStatusBarView.rootWindowInsets?.displayCutout
                             ?: phoneStatusBarView.display?.cutout
@@ -553,6 +671,13 @@ fun StatusBarRoot(
                             phoneStatusBarView,
                         )
                     }
+                    islandAutoOffsetYPx =
+                        dynamicIslandCameraCenterOffsetYPx(
+                            host,
+                            phoneStatusBarView,
+                            cutout,
+                            islandDensity,
+                        )
                     if (startAnchored && cutout != null) {
                         val baseLeft = dynamicIslandStartEdgePx(cutout, islandDensity)
                         // View location includes translationX, so compare against base + offset.
@@ -623,6 +748,7 @@ fun StatusBarRoot(
                             listOf(
                                     DynamicIslandFeatureSettings.OFFSET_X_DP10,
                                     DynamicIslandFeatureSettings.OFFSET_Y_DP10,
+                                    DynamicIslandFeatureSettings.LANDSCAPE_TOP,
                                 )
                                 .forEach {
                                     islandResolver.registerContentObserver(
@@ -637,6 +763,7 @@ fun StatusBarRoot(
 
                         override fun onViewDetachedFromWindow(v: View) {
                             islandResolver.unregisterContentObserver(islandOffsetObserver)
+                            sideEdgeHost.hide()
                         }
                     }
                 )
@@ -1209,13 +1336,16 @@ private fun applyOverlapState(
     val loc = IntArray(2)
     var anyOverlap = false
     val hasIsland = !islandBounds.isEmpty
+    val density = statusIconContainer.resources.displayMetrics.density
 
     for (i in 0 until statusIconContainer.childCount) {
         val child = statusIconContainer.getChildAt(i)
         if (child.width == 0) continue
         child.getLocationInWindow(loc)
         childRect.set(loc[0], loc[1], loc[0] + child.width, loc[1] + child.height)
-        val overlaps = hasIsland && Rect.intersects(childRect, islandBounds)
+        val overlaps =
+            hasIsland &&
+                iconOverlapsIsland(childRect, islandBounds, density, child in hiddenByOverlap)
 
         if (overlaps) {
             if (child.visibility == View.VISIBLE) {
@@ -1266,6 +1396,23 @@ private fun clearOverlapState(
     }
 }
 
+/**
+ * Whether a status icon is under the island. A hidden icon needs a wider berth to come back than
+ * a shown one needs to go, so icons at the island's edge don't flicker while it resizes.
+ */
+private fun iconOverlapsIsland(icon: Rect, island: Rect, density: Float, hidden: Boolean): Boolean {
+    if (icon.isEmpty || island.isEmpty) return false
+    val margin = ((if (hidden) ICON_SHOW_MARGIN_DP else ICON_HIDE_MARGIN_DP) * density).toInt()
+    return icon.bottom > island.top &&
+        icon.top < island.bottom &&
+        icon.right > island.left - margin &&
+        icon.left < island.right + margin
+}
+
+private const val ICON_HIDE_MARGIN_DP = 6f
+private const val ICON_SHOW_MARGIN_DP = 10f
+private val IconHideEasing = PathInterpolator(0.4f, 0f, 1f, 1f)
+private val IconShowEasing = PathInterpolator(0f, 0f, 0.2f, 1f)
 private const val ICON_BLUR_DURATION_MS = 240L
 private const val ICON_BLUR_MAX_RADIUS_DP = 6f
 
@@ -1318,7 +1465,7 @@ private fun runIconBlur(
     val anim = IconBlurAnim(animator, hiding, originalAlpha).also { it.progress = from }
     iconBlurAnims[view] = anim
     animator.duration = ICON_BLUR_DURATION_MS
-    animator.interpolator = PathInterpolator(0.4f, 0f, 0.2f, 1f)
+    animator.interpolator = if (hiding) IconHideEasing else IconShowEasing
     animator.addUpdateListener {
         anim.progress = it.animatedValue as Float
         applyIconBlur(view, anim.progress, originalAlpha)

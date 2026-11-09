@@ -26,12 +26,14 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeight
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -41,14 +43,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.integerResource
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.android.compose.animation.scene.ContentScope
 import com.android.compose.modifiers.padding
 import com.android.systemui.common.ui.compose.PagerDots
 import com.android.systemui.compose.modifiers.sysuiResTag
 import com.android.systemui.development.ui.compose.BuildNumber
 import com.android.systemui.development.ui.viewmodel.BuildNumberViewModel
+import com.android.systemui.grid.ui.compose.GridSpan
+import com.android.systemui.grid.ui.compose.PlacedGridItem
+import com.android.systemui.grid.ui.compose.calculate2DPlacements
 import com.android.systemui.lifecycle.rememberViewModel
 import com.android.systemui.qs.footer.ui.compose.rememberSystemSettingEnabled
 import com.android.systemui.qs.panels.dagger.PaginatedBaseLayoutType
@@ -59,10 +66,19 @@ import com.android.systemui.qs.panels.ui.compose.infinitegrid.ColorOSGridFooterH
 import com.android.systemui.qs.panels.ui.compose.infinitegrid.ColorOSGridHeadroom
 import com.android.systemui.qs.panels.ui.compose.infinitegrid.LocalColorOSGridRows
 import com.android.systemui.qs.panels.ui.compose.infinitegrid.LocalColorOSQsStyle
+import com.android.systemui.qs.panels.ui.compose.infinitegrid.LocalNothingPagePlacements
+import com.android.systemui.qs.panels.ui.compose.infinitegrid.LocalNothingPageSliders
+import com.android.systemui.qs.panels.ui.compose.infinitegrid.LocalNothingQsStyle
+import com.android.systemui.qs.panels.ui.compose.infinitegrid.LocalNothingSliderContent
+import com.android.systemui.qs.panels.ui.compose.infinitegrid.NothingLayout
+import com.android.systemui.qs.panels.ui.compose.infinitegrid.NothingSliderItem
+import com.android.systemui.qs.panels.ui.compose.infinitegrid.rememberNothingQSMaxContentWidth
+import com.android.systemui.qs.panels.ui.compose.infinitegrid.rememberNothingLayout
 import com.android.systemui.qs.panels.ui.compose.toolbar.EditModeButton
 import com.android.systemui.qs.panels.ui.viewmodel.PaginatedGridViewModel
 import com.android.systemui.qs.panels.ui.viewmodel.TileViewModel
 import com.android.systemui.qs.panels.ui.viewmodel.toolbar.EditModeButtonViewModel
+import com.android.systemui.qs.pipeline.shared.TileSpec
 import com.android.systemui.res.R
 import javax.inject.Inject
 
@@ -92,16 +108,98 @@ constructor(
         // chunks of rows x columns, with fewer rows so the panel does not need to scroll.
         val colorOSStyle = LocalColorOSQsStyle.current
         val rows = if (colorOSStyle) LocalColorOSGridRows.current else viewModel.rows
-        val pages =
-            remember(tiles, rows, colorOSStyle, *delegateGridViewModel.pageKeys) {
-                if (colorOSStyle) {
+        // The Nothing style places circles, pills and quads on a 4 column grid, four rows a page.
+        val nothingStyle = LocalNothingQsStyle.current
+        val nothingLayout = if (nothingStyle) rememberNothingLayout() else NothingLayout.None
+        val (quadTiles, tileLayout) = nothingLayout
+        // Sliders are only placed where the host can draw them
+        val nothingSliders =
+            if (LocalNothingSliderContent.current != null) nothingLayout.sliders else emptyList()
+        val largeTiles by viewModel.largeTiles.collectAsStateWithLifecycle()
+        val pagesWithPlacements =
+            remember(
+                tiles,
+                rows,
+                colorOSStyle,
+                nothingStyle,
+                largeTiles,
+                quadTiles,
+                tileLayout,
+                nothingSliders,
+                *delegateGridViewModel.pageKeys,
+            ) {
+                var pagePlacements = emptyMap<TileSpec, Pair<Int, Int>>()
+                var pageSliders = emptyList<List<NothingSliderItem>>()
+                val pageList =
+                if (nothingStyle) {
+                    val spans =
+                        tiles.map {
+                            when {
+                                quadTiles.contains(it.spec) ->
+                                    GridSpan(colSpan = 2, rowSpan = 2)
+                                largeTiles.contains(it.spec) ->
+                                    GridSpan(colSpan = 2, rowSpan = 1)
+                                else -> GridSpan(colSpan = 1, rowSpan = 1)
+                            }
+                        }
+                    val preferredPlacements =
+                        tiles
+                            .mapIndexedNotNull { index, tile ->
+                                tileLayout[tile.spec]?.let { index to it }
+                            }
+                            .toMap()
+                    // The slider cells are held back so the tiles flow around them
+                    val reserved =
+                        nothingSliders.mapIndexed { i, slider ->
+                            PlacedGridItem(tiles.size + i, slider.row, slider.col, slider.span, 1)
+                        }
+                    val placements =
+                        calculate2DPlacements(
+                            spans,
+                            NOTHING_COLUMNS,
+                            preferredPlacements = preferredPlacements,
+                            maxRowsPerPage = NOTHING_ROWS_PER_PAGE,
+                            reserved = reserved,
+                        )
+                    // Rows are global here, but each page lays out its own tiles from row 0
+                    pagePlacements =
+                        placements.associate {
+                            tiles[it.index].spec to
+                                (it.row % NOTHING_ROWS_PER_PAGE to it.col)
+                        }
+                    val grouped = placements.groupBy { it.row / NOTHING_ROWS_PER_PAGE }
+                    // A page with only a slider is still a page
+                    val pageIndices =
+                        (grouped.keys + nothingSliders.map { it.row / NOTHING_ROWS_PER_PAGE })
+                            .distinct()
+                            .sorted()
+                    pageSliders =
+                        pageIndices.map { pageIndex ->
+                            nothingSliders
+                                .filter { it.row / NOTHING_ROWS_PER_PAGE == pageIndex }
+                                .map { it.copy(row = it.row % NOTHING_ROWS_PER_PAGE) }
+                        }
+                    pageIndices
+                        .map { pageIndex ->
+                            grouped[pageIndex].orEmpty().map { tiles[it.index] }
+                        }
+                        .ifEmpty { listOf(emptyList()) }
+                } else if (colorOSStyle) {
                     tiles.chunked(rows * ColorOSGridColumns)
                 } else {
                     delegateGridViewModel.splitIntoPages(tiles, rows)
                 }
+                Triple(
+                    pageList,
+                    pagePlacements,
+                    pageSliders.ifEmpty { List(pageList.size) { emptyList() } },
+                )
             }
+        val pages = pagesWithPlacements.first
 
         val pagerState = rememberPagerState(0) { pages.size }
+        val pagerMaxWidth =
+            if (nothingStyle) rememberNothingQSMaxContentWidth() else Dp.Unspecified
 
         LaunchedEffect(listening, pagerState) {
             snapshotFlow { listening() }
@@ -152,6 +250,15 @@ constructor(
                 state = pagerState,
                 modifier =
                     Modifier.sysuiResTag("qs_pager")
+                        .then(
+                            if (nothingStyle) {
+                                Modifier.fillMaxWidth()
+                                    .wrapContentWidth()
+                                    .widthIn(max = pagerMaxWidth)
+                            } else {
+                                Modifier
+                            }
+                        )
                         .padding(horizontal = { -contentPaddingValue.roundToPx() })
                         .nestedScroll(nestedScrollConnection),
                 contentPadding = contentPadding,
@@ -161,13 +268,18 @@ constructor(
             ) {
                 val page = pages[it]
 
-                with(delegateGridLayout) {
-                    TileGrid(
-                        tiles = page,
-                        modifier = Modifier,
-                        listening = listening,
-                        enableRevealEffect = false,
-                    )
+                CompositionLocalProvider(
+                    LocalNothingPagePlacements provides pagesWithPlacements.second,
+                    LocalNothingPageSliders provides pagesWithPlacements.third.getOrNull(it),
+                ) {
+                    with(delegateGridLayout) {
+                        TileGrid(
+                            tiles = page,
+                            modifier = Modifier,
+                            listening = listening,
+                            enableRevealEffect = false,
+                        )
+                    }
                 }
             }
             FooterBar(
@@ -180,6 +292,9 @@ constructor(
         }
     }
 }
+
+private const val NOTHING_COLUMNS = 4
+private const val NOTHING_ROWS_PER_PAGE = 4
 
 private object Dimensions {
     val FooterHeight = ColorOSGridFooterHeight
@@ -195,21 +310,23 @@ private fun FooterBar(
     isVisible: () -> Boolean = { true },
 ) {
     // The ColorOS panel has no footer: the build number and the edit button are not shown (the
-    // panel buttons are in the header), only the page dots stay, centered below the grid.
+    // panel buttons are in the header), only the page dots stay, centered below the grid. They are
+    // round dots, the current page is not a wider pill, and a little larger than the stock ones.
     if (LocalColorOSQsStyle.current) {
         Box(
             modifier =
-                Modifier.requiredHeight(FooterHeight).fillMaxWidth().padding(top = 12.dp),
+                Modifier.requiredHeight(FooterHeight).fillMaxWidth().padding(top = 4.5.dp),
             contentAlignment = Alignment.TopCenter,
         ) {
             PagerDots(
                 pagerState = pagerState,
                 activeColor = MaterialTheme.colorScheme.onSurface,
                 nonActiveColor = MaterialTheme.colorScheme.onSurface.copy(alpha = .4f),
-                dotSize = 6.dp,
-                spaceSize = 8.dp,
+                dotSize = 7.5.dp,
+                spaceSize = 8.5.dp,
                 showArrows = false,
                 clickToCyclePages = true,
+                roundDots = true,
             )
         }
         return

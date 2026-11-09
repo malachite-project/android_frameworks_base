@@ -139,6 +139,10 @@ constructor(
 
         applicationScope.launch {
             repository.notification.notificationFlow.collect { notification ->
+                // The manager is shared with the dynamic island, which can have it listening
+                // while the bar is off. The bar's own notification events are then not wanted,
+                // and the heads up is not suppressed, so showing the card would overlap it.
+                if (!settings.isNotificationEventsActive()) return@collect
                 repository.notification.coalesceNotification(notification)
                 showNotificationAlert(notification)
             }
@@ -233,6 +237,8 @@ constructor(
                 if (enabled) repository.startListening()
                 else {
                     repository.stopListening()
+                    dismissNotificationAlert()
+                    repository.media.stopProgressPolling()
                     autoDismissJobs.values.forEach { it.cancel() }
                     autoDismissJobs.clear()
                     dismissedEventIds.clear()
@@ -510,7 +516,7 @@ constructor(
     private fun showNotificationAlert(
         notification: IslandEvent.Notification,
     ) {
-        if (panelBlocking || statusBlocking || _isOnKeyguard.value) return
+        if (!settings.isEnabled.value || panelBlocking || statusBlocking || _isOnKeyguard.value) return
         if (shouldSuppressForDndOrRinger(notification)) return
         val current = _uiState.value
         val existingAlert = current.notificationAlert
@@ -606,6 +612,7 @@ constructor(
     }
 
     private fun scheduleAutoDismiss(event: IslandEvent, delayOverride: Long? = null) {
+        if (!settings.isEnabled.value) return
         val ms = delayOverride ?: event.behavior.autoDismissMs ?: return
         val eventId = event.id
         autoDismissJobs[eventId]?.cancel()

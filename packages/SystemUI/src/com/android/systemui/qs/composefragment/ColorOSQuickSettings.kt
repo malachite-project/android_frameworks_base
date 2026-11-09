@@ -6,6 +6,7 @@
 package com.android.systemui.qs.composefragment
 
 import android.media.AudioManager
+import android.provider.Settings
 import androidx.annotation.DrawableRes
 import androidx.annotation.RawRes
 import androidx.compose.animation.animateColorAsState
@@ -15,20 +16,24 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Arrangement.spacedBy
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
@@ -37,10 +42,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -51,21 +58,29 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.airbnb.lottie.LottieProperty
 import com.airbnb.lottie.compose.LottieAnimation
@@ -73,12 +88,16 @@ import com.airbnb.lottie.compose.LottieCompositionSpec
 import com.airbnb.lottie.compose.rememberLottieComposition
 import com.airbnb.lottie.compose.rememberLottieDynamicProperties
 import com.airbnb.lottie.compose.rememberLottieDynamicProperty
+import com.android.compose.animation.Expandable
 import com.android.compose.animation.scene.ContentScope
 import com.android.settingslib.volume.domain.interactor.AudioVolumeInteractor
 import com.android.settingslib.volume.shared.model.AudioStream
+import com.android.systemui.animation.Expandable
 import com.android.systemui.brightness.domain.model.GammaBrightness
 import com.android.systemui.brightness.ui.viewmodel.BrightnessSliderViewModel
 import com.android.systemui.brightness.ui.viewmodel.Drag
+import com.android.systemui.qs.footer.ui.compose.rememberSystemSettingEnabled
+import com.android.systemui.shade.QsHeaderImageTint
 import com.android.systemui.qs.panels.ui.compose.GridLayout
 import com.android.systemui.qs.panels.ui.compose.TileListener
 import com.android.systemui.qs.panels.ui.compose.infinitegrid.ColorOSActiveFill
@@ -88,10 +107,10 @@ import com.android.systemui.qs.panels.ui.compose.infinitegrid.ColorOSGridHeadroo
 import com.android.systemui.qs.panels.ui.compose.infinitegrid.ColorOSGridRows
 import com.android.systemui.qs.panels.ui.compose.infinitegrid.ColorOSMinGridRows
 import com.android.systemui.qs.panels.ui.compose.infinitegrid.ColorOSSliderFill
-import com.android.systemui.qs.panels.ui.compose.infinitegrid.ColorOSTileRim
 import com.android.systemui.qs.panels.ui.compose.infinitegrid.LocalColorOSGlassBlur
 import com.android.systemui.qs.panels.ui.compose.infinitegrid.colorOSGlassBlur
 import com.android.systemui.qs.panels.ui.compose.infinitegrid.colorOSGlassTileMaterial
+import com.android.systemui.qs.panels.ui.compose.infinitegrid.colorOSTileRim
 import com.android.systemui.qs.panels.ui.compose.infinitegrid.rememberColorOSGlassBlur
 import com.android.systemui.qs.panels.ui.compose.infinitegrid.CommonTileDefaults
 import com.android.systemui.qs.panels.ui.compose.infinitegrid.InfiniteGridLayout
@@ -102,31 +121,64 @@ import com.android.systemui.qs.panels.ui.compose.infinitegrid.colorOSPress
 import com.android.systemui.qs.panels.ui.compose.infinitegrid.colorOSSpring
 import com.android.systemui.qs.panels.ui.compose.infinitegrid.rememberQSTileLabelHide
 import com.android.systemui.qs.panels.ui.viewmodel.TileViewModel
+import com.android.systemui.qs.shared.ui.QuickSettings
 import com.android.systemui.res.R
 import kotlin.math.abs
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** Tile specs that ColorOS pins to the fixed wide slots, in order of preference. */
 private val COLOROS_WIFI_SPECS = listOf("internet", "wifi")
-private val COLOROS_DATA_SPECS = listOf("cell", "mobile_data", "mobiledata")
 private val COLOROS_BT_SPECS = listOf("bt", "bluetooth")
 
 /**
- * The specs of the tiles the panel pins as cards, the Wi-Fi, Bluetooth and mobile data ones that
- * are present. The grid and the editor leave them out.
+ * What fills a pinned slot whose own tile is not in the panel, in order of preference. ColorOS
+ * always shows two cards in the first row, so a panel without a Wi-Fi tile or without a Bluetooth
+ * tile takes the first of these that it has instead of leaving a hole.
  */
-internal fun colorOSCardSpecsOf(present: Set<String>): Set<String> = buildSet {
-    COLOROS_WIFI_SPECS.firstOrNull { it in present }?.let(::add)
-    COLOROS_BT_SPECS.firstOrNull { it in present }?.let(::add)
-    COLOROS_DATA_SPECS.firstOrNull { it in present }?.let(::add)
+private val COLOROS_CARD_FALLBACK_SPECS = listOf("cell", "hotspot", "nfc", "cast", "airplane")
+
+/**
+ * The specs of the two cards of the first row, the Wi-Fi one first and the Bluetooth one second. A
+ * slot with no tile of its own gets a fallback, which no other slot uses, and stays null when there
+ * is none.
+ */
+internal fun colorOSCardSlotsOf(present: Set<String>): List<String?> {
+    val fallbacks = COLOROS_CARD_FALLBACK_SPECS.filter { it in present }.iterator()
+    fun fallback(): String? = if (fallbacks.hasNext()) fallbacks.next() else null
+    val wifi = COLOROS_WIFI_SPECS.firstOrNull { it in present }
+    val bt = COLOROS_BT_SPECS.firstOrNull { it in present }
+    return listOf(wifi ?: fallback(), bt ?: fallback())
 }
+
+/**
+ * The specs of the tiles the panel pins as cards, the Wi-Fi and Bluetooth ones that are present and
+ * the fallbacks of the ones that are not. The grid and the editor leave them out, and the editor
+ * keeps them at the front of the list. The mobile data tile is a round tile of the grid unless it
+ * stands in for a missing Wi-Fi tile, the third card is My Devices.
+ */
+internal fun colorOSCardSpecsOf(present: Set<String>): Set<String> =
+    colorOSCardSlotsOf(present).filterNotNull().toSet()
 
 /** The blue of the volume icon, as in the ColorOS panel. */
 private val ColorOSSliderBlue = Color(0xFF0068FF)
 
 /** An icon on the white fill of a slider is black at 70%, not solid black, as in ColorOS. */
 private val ColorOSSliderIconOnFill = Color(0xB3000000)
+
+/** Size of the icon at the foot of a ColorOS slider, the brightness sun. */
+private val ColorOSSliderIconSize = 28.dp
+
+/**
+ * Size of the headphones of the volume slider, they are drawn larger than the sun, as ColorOS does,
+ * and the other volume icons.
+ */
+private val ColorOSVolumeHeadphonesIconSize = 32.dp
+private val ColorOSVolumeIconSize = 28.dp
+
+/** Space between the foot of a ColorOS slider and its icon. */
+private val ColorOSSliderIconBottomInset = 18.dp
 
 /** Sun-icon colour at full brightness (the orange of the 🔆 emoji). */
 private val ColorOSBrightnessFull = Color(0xFFFF9F0A)
@@ -199,13 +251,20 @@ private const val ColorOSSliderAspect = 2.1f
 /** Corner radius of the glass slot behind the media card, playing or idle. */
 private val ColorOSMediaShape = RoundedCornerShape(32.dp)
 
+/** The soft light along the top of the glass of the light panel, where there is no blur region. */
+private val ColorOSLightGlassHighlight =
+    Brush.verticalGradient(
+        0f to Color.White.copy(alpha = 0.18f),
+        0.5f to Color.Transparent,
+    )
+
 /**
  * ColorOS-style expanded Quick Settings.
  *
  * ```
  * [ Wi-Fi         ][ Bluetooth     ]
  * [ Media        ][ ☀ ][ 🔊 ]          tall brightness + media volume sliders
- * [ 🔔  📳  🔕     ][ Mobile data   ]   ringer switch, mobile data card
+ * [ My Devices   ][ 🔔  📳  🔕     ]   Bluetooth devices, ringer switch
  * ( ) ( ) ( ) ( )                       every other tile: round, label below
  *
  * The media card spans the first two columns of the round tile grid and each slider is one
@@ -213,7 +272,7 @@ private val ColorOSMediaShape = RoundedCornerShape(32.dp)
  * ```
  *
  * The fixed tiles are the real tile view models, so they behave exactly like their stock
- * versions. Anything missing on a device (e.g. no mobile data tile) simply leaves its slot out.
+ * versions. Anything missing on a device (e.g. no Bluetooth tile) simply leaves its slot out.
  */
 @Composable
 internal fun ContentScope.ColorOSQuickSettingsLayout(
@@ -231,25 +290,38 @@ internal fun ContentScope.ColorOSQuickSettingsLayout(
     onFitChanged: (Boolean) -> Unit = {},
     glassAlpha: () -> Float = { 1f },
     expansion: () -> Float = { 1f },
+    headerHeight: Dp = 0.dp,
+    header: @Composable () -> Unit = {},
+    onOpenDevices: () -> Unit = {},
 ) {
-    fun pick(specs: List<String>): TileViewModel? =
-        specs.firstNotNullOfOrNull { spec -> tiles.firstOrNull { it.spec.spec == spec } }
-
-    val wifi = pick(COLOROS_WIFI_SPECS)
-    val bt = pick(COLOROS_BT_SPECS)
-    val data = pick(COLOROS_DATA_SPECS)
-    val fixed = listOfNotNull(wifi, bt, data)
-    val rest = remember(tiles, fixed) { tiles.filterNot { it in fixed } }
+    val chosen by rememberColorOSPinned()
+    val pinned =
+        remember(tiles, chosen) {
+            val bySpec = tiles.associateBy { it.spec.spec }
+            val slots = colorOSPinnedOf(bySpec.keys, chosen)
+            slots.cards.map { spec -> spec?.let(bySpec::get) } to slots.pill?.let(bySpec::get)
+        }
+    val fixed = remember(pinned) { pinned.first.filterNotNull() }
+    val pillTile = pinned.second
+    val rest = remember(tiles, fixed, pillTile) { tiles.filterNot { it in fixed || it == pillTile } }
 
     // The fixed tiles are not part of a grid, so make them listen ourselves.
-    TileListener(fixed, listening)
+    TileListener(fixed + listOfNotNull(pillTile), listening)
 
     // Null where SurfaceFlinger cannot blur behind the shade, the flat fills stay then.
     // The modules are revealed when the shade opens and hidden when it closes, and the glass goes
     // out quickly with it.
     val leaving = rememberColorOSLeaving(expansion)
     val glassFade = rememberColorOSGlassFade(leaving)
-    val glassBlur = rememberColorOSGlassBlur { glassAlpha() * glassFade.value }
+    val reveal: () -> Float = { colorOSExpansionReveal(expansion()) }
+    // The glass is a blur region of the window, so it does not follow the alpha the scene
+    // transition gives the content. The content fades in later than the panel is revealed, and
+    // without its alpha the glass would show up before the tiles do.
+    val glassBlur =
+        rememberColorOSGlassBlur {
+            glassAlpha() * glassFade.value * reveal() *
+                (QuickSettings.Elements.QuickSettingsContent.currentAlpha() ?: 1f)
+        }
     val glass = colorOSGlass(blurred = glassBlur != null)
 
     BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
@@ -274,18 +346,25 @@ internal fun ContentScope.ColorOSQuickSettingsLayout(
             LocalColorOSGlassBlur provides glassBlur,
         ) {
             Column(Modifier.fillMaxWidth(), verticalArrangement = spacedBy(ColorOSGap)) {
-                // Row 1: Wi-Fi + Bluetooth
-                if (wifi != null || bt != null) {
+                // The room the shade header keeps above the panel, with the two buttons at the top.
+                // The status line in it is drawn by the shade header. The gap of the column is
+                // part of the height, so the panel ends up where it was without the buttons.
+                if (headerHeight > ColorOSGap) {
+                    Box(Modifier.fillMaxWidth().height(headerHeight - ColorOSGap)) { header() }
+                }
+
+                // Row 1: Wi-Fi + Bluetooth, or what stands in for the one that is missing
+                if (fixed.isNotEmpty()) {
                     Row(
                         horizontalArrangement = spacedBy(ColorOSGap),
-                        modifier = Modifier.colorOSModuleReveal(1, leaving),
+                        modifier = Modifier.colorOSModuleReveal(1, leaving, reveal),
                     ) {
-                        listOfNotNull(wifi, bt).forEach { tile ->
+                        fixed.forEach { tile ->
                             with(infiniteGridLayout) {
                                 ColorOSWideTile(tile, listening, Modifier.weight(1f))
                             }
                         }
-                        if (wifi == null || bt == null) Box(Modifier.weight(1f))
+                        if (fixed.size < 2) Box(Modifier.weight(1f))
                     }
                 }
 
@@ -296,7 +375,7 @@ internal fun ContentScope.ColorOSQuickSettingsLayout(
             Row(
                 horizontalArrangement = spacedBy(ColorOSGap),
                 modifier =
-                    Modifier.colorOSModuleReveal(2, leaving)
+                    Modifier.colorOSModuleReveal(2, leaving, reveal)
                         .fillMaxWidth()
                         .height(moduleHeight),
             ) {
@@ -332,22 +411,30 @@ internal fun ContentScope.ColorOSQuickSettingsLayout(
                 }
             }
 
-            // Row 3: ringer switch + mobile data. ColorOS keeps the ringer switch on the left next
-                // to the mobile data card, and on the right when there is no card to put beside it.
+            // Row 3: My Devices + ringer switch, as ColorOS 17 has them. The mobile data tile is
+                // one of the round tiles below.
                 Row(
                     horizontalArrangement = spacedBy(ColorOSGap),
-                    modifier = Modifier.colorOSModuleReveal(3, leaving),
+                    modifier = Modifier.colorOSModuleReveal(3, leaving, reveal),
                 ) {
-                    if (data == null) Box(Modifier.weight(1f))
+                    if (pillTile != null) {
+                        with(infiniteGridLayout) {
+                            ColorOSWideTile(pillTile, listening, Modifier.weight(1f))
+                        }
+                    } else {
+                        ColorOSMyDevices(
+                            glass = glass,
+                            height = tileSize,
+                            onClick = onOpenDevices,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                     ColorOSRingerSwitch(
                         audioVolumeInteractor = audioVolumeInteractor,
                         glass = glass,
                         height = tileSize,
                         modifier = Modifier.weight(1f),
                     )
-                    if (data != null) {
-                        with(infiniteGridLayout) { ColorOSWideTile(data, listening, Modifier.weight(1f)) }
-                    }
                 }
 
                 // Everything else: round icon tiles with labels (the grid handles paging + listening)
@@ -356,7 +443,7 @@ internal fun ContentScope.ColorOSQuickSettingsLayout(
                         TileGrid(
                             tiles = rest,
                             modifier =
-                                Modifier.colorOSModuleReveal(4, leaving)
+                                Modifier.colorOSModuleReveal(4, leaving, reveal)
                                     .fillMaxWidth()
                                     .padding(top = ColorOSGridTopPadding),
                             listening = listening,
@@ -406,8 +493,84 @@ private fun Modifier.glassSurface(glass: ColorOSGlass, shape: Shape): Modifier =
     if (glass.blurred) {
         this.clip(shape).colorOSGlassBlur(shape, glass.material)
     } else {
-        this.clip(shape).background(glass.fill, shape).border(1.dp, ColorOSTileRim, shape)
+        // Without blur the light panel has no glass behind it to catch the light, so its glass
+        // gets the white rim and the light along the top of the light panel of MiraCLO.
+        this.clip(shape)
+            .background(glass.fill, shape)
+            .then(
+                if (glass.dark) Modifier
+                else Modifier.background(ColorOSLightGlassHighlight, shape)
+            )
+            .border(1.dp, colorOSTileRim(), shape)
     }
+
+/**
+ * "My Devices" of ColorOS 17: a glass pill with a bubble that holds the orbit glyph, which opens
+ * the Bluetooth devices. It is the left half of the ringer row.
+ */
+@Composable
+private fun ColorOSMyDevices(
+    glass: ColorOSGlass,
+    height: Dp,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val pressSource = remember { MutableInteractionSource() }
+    val shape = RoundedCornerShape(percent = 50)
+    val bubble = height * ColorOSRingerBubbleRatio
+    val inset = (height - bubble) / 2
+    Row(
+        modifier =
+            modifier
+                .height(height)
+                .colorOSPress(pressSource)
+                .glassSurface(glass, shape)
+                .clickable(
+                    interactionSource = pressSource,
+                    indication = null,
+                    role = Role.Button,
+                    onClick = onClick,
+                )
+                .padding(horizontal = inset),
+        horizontalArrangement = spacedBy(inset),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier =
+                Modifier.size(bubble)
+                    .clip(CircleShape)
+                    .background(
+                        if (glass.dark) Color.White.copy(alpha = 0.12f)
+                        else Color.Black.copy(alpha = 0.06f)
+                    ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                painter = painterResource(R.drawable.ic_coloros_my_devices),
+                contentDescription = null,
+                tint = glass.iconOff,
+                modifier = Modifier.size(bubble * 0.6f),
+            )
+        }
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = stringResource(R.string.qs_coloros_my_devices),
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = stringResource(R.string.qs_coloros_my_devices_hint),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
 
 /** How long a released slider waits for the value it set to be reported back. */
 private const val ColorOSSliderSettleMillis = 400L
@@ -429,6 +592,7 @@ private fun ColorOSVerticalSlider(
     onChange: (Float) -> Unit,
     onStop: (Float) -> Unit,
     modifier: Modifier = Modifier,
+    iconSize: Dp = ColorOSSliderIconSize,
     fullIconTint: Color? = null,
     snap: (Float) -> Float = { it },
     onLongPress: (() -> Unit)? = null,
@@ -535,7 +699,10 @@ private fun ColorOSVerticalSlider(
                     local > 0.18f -> iconTint
                     else -> glass.iconOff
                 },
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 18.dp).size(26.dp),
+            modifier =
+                Modifier.align(Alignment.BottomCenter)
+                    .padding(bottom = ColorOSSliderIconBottomInset)
+                    .size(iconSize),
         )
     }
 }
@@ -588,13 +755,20 @@ private fun ColorOSVolumeSlider(
     val span = (max - min).coerceAtLeast(1)
     val fraction = current?.let { ((it.volume - min).toFloat() / span).coerceIn(0f, 1f) } ?: 0f
     fun toVolume(f: Float) = (min + Math.round(f * span)).coerceIn(min, max)
+    val silent = current?.isMuted == true || fraction == 0f
+    val headphones = rememberColorOSHeadphonesOutput()
 
     ColorOSVerticalSlider(
         fraction = fraction,
         iconRes =
-            if (current?.isMuted == true || fraction == 0f) R.drawable.ic_volume_media_mute
-            else R.drawable.ic_volume_media,
+            when {
+                silent && headphones -> R.drawable.ic_coloros_volume_headphones_mute
+                headphones -> R.drawable.ic_coloros_volume_headphones
+                silent -> R.drawable.ic_coloros_volume_mute
+                else -> R.drawable.ic_coloros_volume
+            },
         iconTint = glass.accent,
+        iconSize = if (headphones) ColorOSVolumeHeadphonesIconSize else ColorOSVolumeIconSize,
         label = stringResource(R.string.stream_music),
         glass = glass,
         onChange = { f -> scope.launch { audioVolumeInteractor.setVolume(stream, toVolume(f)) } },
@@ -613,10 +787,20 @@ private fun ColorOSVolumeSlider(
 }
 
 /**
- * ColorOS colours the selected sound mode red whichever mode it is. Light panel: red bubble with a
- * white icon. Dark panel: white bubble with a red icon, the same pairing the active QS tiles use.
+ * ColorOS colours the selected sound mode red. Dark panel: white bubble with a red icon, the same
+ * pairing the active QS tiles use.
  */
 private val ColorOSRingerRed = Color(0xFFF2453D)
+
+/** The ring mode has a blue bubble on the light panel, as it does in MiraCLO. */
+private val ColorOSRingerBlue = Color(0xFF1A7CFF)
+
+/**
+ * The bubble of the selected mode on the light panel, which has a white icon on it: blue for ring,
+ * red for vibrate and silent.
+ */
+private fun colorOSRingerLightBubble(mode: Int): Color =
+    if (mode == AudioManager.RINGER_MODE_NORMAL) ColorOSRingerBlue else ColorOSRingerRed
 
 /** How far the end buttons are pulled towards the middle, in segments, by the selected bubble. */
 private const val ColorOSRingerNudge = 0.1f
@@ -628,17 +812,16 @@ private class ColorOSRingerMode(
     val label: String,
 )
 
-/** Which way the button at [index] leans: the ends of the switch lean in, towards the middle. */
-private fun colorOSRingerNudge(index: Int, selected: Int, last: Int): Float =
+/**
+ * Which way the switch leans. The buttons and the bubble lean in, towards the middle, only while
+ * the bubble sits at an end, with the middle one selected each icon stays in the middle of its
+ * third.
+ */
+private fun colorOSRingerNudge(selected: Int, last: Int): Float =
     when (selected) {
         0 -> 1f
         last -> -1f
-        else ->
-            when (index) {
-                0 -> 1f
-                last -> -1f
-                else -> 0f
-            }
+        else -> 0f
     }
 
 @Composable
@@ -676,22 +859,26 @@ private fun ColorOSRingerSwitch(
     val bubble = height * ColorOSRingerBubbleRatio
     val selected = modes.indexOfFirst { it.mode == ringerMode.value }.coerceAtLeast(0)
     val last = modes.lastIndex
+    val bubbleColor by
+        animateColorAsState(
+            if (glass.dark) ColorOSActiveFill else colorOSRingerLightBubble(modes[selected].mode),
+            colorOSSpring(0f, 0.3f),
+            label = "colorOSRingerBubbleColor",
+        )
 
     BoxWithConstraints(
-        modifier = modifier.height(height).glassSurface(glass, shape).padding(horizontal = 5.dp),
+        modifier = modifier.height(height).glassSurface(glass, shape),
         contentAlignment = Alignment.CenterStart,
     ) {
         val density = LocalDensity.current
         val segmentPx = with(density) { maxWidth.toPx() } / modes.size
         val bubblePx = with(density) { bubble.toPx() }
-        val nudge = { index: Int ->
-            colorOSRingerNudge(index, selected, last) * ColorOSRingerNudge * segmentPx
-        }
+        val nudge = colorOSRingerNudge(selected, last) * ColorOSRingerNudge * segmentPx
         // One bubble slides to the selected mode, it leans a little towards the middle when it
         // sits at an end. The buttons lean with it.
         val indicatorX by
             animateFloatAsState(
-                selected * segmentPx + (segmentPx - bubblePx) / 2f + nudge(selected),
+                selected * segmentPx + (segmentPx - bubblePx) / 2f + nudge,
                 colorOSSpring(0.25f, 0.3f),
                 label = "colorOSRingerIndicator",
             )
@@ -700,13 +887,13 @@ private fun ColorOSRingerSwitch(
         Box(
             Modifier.graphicsLayer { translationX = indicatorX }
                 .requiredSize(bubble)
-                .background(if (glass.dark) ColorOSActiveFill else ColorOSRingerRed, CircleShape)
+                .background(bubbleColor, CircleShape)
         )
         Row(Modifier.fillMaxSize()) {
             modes.forEachIndexed { index, mode ->
                 val shift by
                     animateFloatAsState(
-                        nudge(index),
+                        nudge,
                         colorOSSpring(0f, 0.35f),
                         label = "colorOSRingerNudge",
                     )
@@ -725,7 +912,7 @@ private fun ColorOSRingerSwitch(
 
 /**
  * One mode of the ringer switch. Its icon is red on the white bubble of a dark panel and white on
- * the red bubble of a light one, it grows a little and plays its animation when it gets selected.
+ * the colored bubble of a light one, it grows a little and plays its animation when it gets selected.
  */
 @Composable
 private fun ColorOSRingerButton(
@@ -823,6 +1010,126 @@ private fun ColorOSRingerButton(
                 contentDescription = null,
                 tint = color,
                 modifier = iconModifier,
+            )
+        }
+    }
+}
+
+/** Diameter of the two round buttons of the ColorOS header. */
+private val ColorOSHeaderButtonSize = 40.dp
+
+/** How far the two buttons sit in from the sides of the panel, ColorOS keeps them off its edge. */
+private val ColorOSHeaderButtonInset = 6.dp
+
+/** How far the row of the buttons is moved up, ColorOS puts it higher above the status row. */
+private val ColorOSHeaderButtonRaise = 5.5.dp
+
+/**
+ * The glyphs of the two header buttons are drawn at different sizes, as the ColorOS gear is larger
+ * in its circle than the pencil is.
+ */
+private val ColorOSHeaderEditIconSize = 21.dp
+private val ColorOSHeaderSettingsIconSize = 29.dp
+
+/** The glyph of a header button over a light part of the header image. */
+private val ColorOSHeaderIconOnLightImage = Color.Black
+
+/**
+ * The two buttons above the panel: edit on the start side and settings on the end side, round
+ * glass like the tiles that are off. A missing [onSettings], or a button that the footer settings
+ * hide, leaves its place empty.
+ */
+@Composable
+internal fun ColorOSHeaderButtons(
+    onEdit: (Expandable) -> Unit,
+    onSettings: ((Expandable) -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    val glass = colorOSGlass(blurred = LocalColorOSGlassBlur.current != null)
+    // The same settings that hid the buttons of the footer. A hidden button keeps its place, so
+    // the other one stays on its side.
+    val showEdit by rememberSystemSettingEnabled(Settings.System.QS_FOOTER_SHOW_EDIT)
+    val showSettings by rememberSystemSettingEnabled(Settings.System.QS_FOOTER_SHOW_SETTINGS)
+    Row(
+        modifier =
+            modifier
+                .fillMaxWidth()
+                .offset(y = -ColorOSHeaderButtonRaise)
+                .padding(horizontal = ColorOSHeaderButtonInset),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top,
+    ) {
+        if (showEdit) {
+            ColorOSHeaderButton(
+                iconRes = R.drawable.ic_edit,
+                iconSize = ColorOSHeaderEditIconSize,
+                region = QsHeaderImageTint.Region.EDIT,
+                description = stringResource(R.string.accessibility_quick_settings_edit),
+                glass = glass,
+                onClick = onEdit,
+            )
+        } else {
+            Spacer(Modifier.size(ColorOSHeaderButtonSize))
+        }
+        if (showSettings && onSettings != null) {
+            ColorOSHeaderButton(
+                iconRes = R.drawable.ic_qs_footer_settings,
+                iconSize = ColorOSHeaderSettingsIconSize,
+                region = QsHeaderImageTint.Region.SETTINGS,
+                description = stringResource(R.string.accessibility_quick_settings_settings),
+                glass = glass,
+                onClick = onSettings,
+            )
+        } else {
+            Spacer(Modifier.size(ColorOSHeaderButtonSize))
+        }
+    }
+}
+
+@Composable
+private fun ColorOSHeaderButton(
+    iconRes: Int,
+    iconSize: Dp,
+    region: QsHeaderImageTint.Region,
+    description: String,
+    glass: ColorOSGlass,
+    onClick: (Expandable) -> Unit,
+) {
+    val pressSource = remember { MutableInteractionSource() }
+    val onLightImage by QsHeaderImageTint.lightFlow(region).collectAsState()
+    Expandable(
+        color = Color.Unspecified,
+        shape = CircleShape,
+        onClick = onClick,
+        interactionSource = pressSource,
+        useModifierBasedImplementation = true,
+        defaultMinSize = false,
+        modifier =
+            Modifier.size(ColorOSHeaderButtonSize)
+                .onGloballyPositioned {
+                    // Where the header image is sampled to tell if the glyph has to be dark.
+                    val b = it.boundsInWindow()
+                    QsHeaderImageTint.setBounds(
+                        region,
+                        b.left.roundToInt(),
+                        b.top.roundToInt(),
+                        b.right.roundToInt(),
+                        b.bottom.roundToInt(),
+                    )
+                }
+                .colorOSPress(pressSource)
+                .semantics {
+                    role = Role.Button
+                    contentDescription = description
+                }
+                .glassSurface(glass, CircleShape),
+    ) {
+        Box(Modifier.size(ColorOSHeaderButtonSize), contentAlignment = Alignment.Center) {
+            Icon(
+                painter = painterResource(iconRes),
+                contentDescription = null,
+                tint = if (onLightImage) ColorOSHeaderIconOnLightImage else glass.iconOff,
+                modifier = Modifier.size(iconSize),
             )
         }
     }

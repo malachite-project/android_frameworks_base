@@ -19,6 +19,7 @@ package com.android.systemui.qs.panels.ui.viewmodel
 import androidx.annotation.VisibleForTesting
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import com.android.systemui.bluetooth.connecteddevices.ConnectedBluetoothDevicesInteractor
 import com.android.systemui.haptics.msdl.qs.TileHapticsViewModel
 import com.android.systemui.lifecycle.HydratedActivatable
 import com.android.systemui.media.controls.ui.controller.MediaHierarchyManager.Companion.LOCATION_QQS
@@ -42,9 +43,12 @@ constructor(
     quickQuickSettingsRowInteractor: QuickQuickSettingsRowInteractor,
     mediaInRowInLandscapeViewModelFactory: MediaInRowInLandscapeViewModel.Factory,
     val squishinessViewModel: TileSquishinessViewModel,
-    iconTilesViewModel: IconTilesViewModel,
+    val iconTilesViewModel: IconTilesViewModel,
     val tileHapticsViewModelFactory: TileHapticsViewModel.Factory,
+    connectedBluetoothDevicesInteractor: ConnectedBluetoothDevicesInteractor,
 ) : HydratedActivatable() {
+
+    val connectedBluetoothDevices = connectedBluetoothDevicesInteractor.devices
 
     private val qsColumnsViewModel = qsColumnsViewModelFactory.create(LOCATION_QQS, mediaUiBehavior)
     private val mediaInRowViewModel =
@@ -72,6 +76,13 @@ constructor(
         get() = qsColumnsViewModel.largeSpan
 
     private val currentTiles by tilesInteractor.currentTiles.hydratedStateOf()
+
+    /** Every current tile in order, for the Nothing style which places tiles on a 2D grid. */
+    val allTileViewModels by derivedStateOf {
+        currentTiles.map {
+            SizedTileImpl(TileViewModel(it.tile, it.spec, it.expandable), it.spec.width())
+        }
+    }
 
     val tileViewModels by derivedStateOf {
         currentTiles

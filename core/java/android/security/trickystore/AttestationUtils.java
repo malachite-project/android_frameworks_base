@@ -1,6 +1,17 @@
 package android.security.trickystore;
 
+import android.hardware.security.keymint.Tag;
+import android.hardware.security.keymint.IKeyMintDevice;
+import android.os.IBinder;
+import android.os.ServiceManager;
+import android.os.VintfObject;
+import android.util.Xml;
+import org.xmlpull.v1.XmlPullParser;
+import java.io.File;
+import java.io.FileInputStream;
 import android.os.Build;
+import android.security.KeyStore2;
+import android.security.KeyStoreException;
 import android.os.SystemProperties;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
@@ -31,13 +42,48 @@ public final class AttestationUtils {
 
     private static volatile byte[] sBootKey;
     private static volatile byte[] sBootHash;
+    private static volatile byte[] sModuleHash;
     private static volatile boolean sTeeBroken = false;
     // True while the cached boot key/hash was derived from the keybox, so it must be
     // re-derived when the keybox changes. Persisted random values are not affected.
     private static volatile boolean sBootKeyFallback;
     private static volatile boolean sBootHashFallback;
+    private static volatile int sKeyMintAidlVersion;
 
     private AttestationUtils() {}
+
+    public static byte[] getModuleHash() {
+        byte[] cached = sModuleHash;
+        if (cached != null) {
+            return cached.length == 0 ? null : cached;
+        }
+        synchronized (AttestationUtils.class) {
+            cached = sModuleHash;
+            if (cached != null) {
+                return cached.length == 0 ? null : cached;
+            }
+            try {
+                byte[] modulesDer = KeyStore2.getInstance()
+                        .getSupplementaryAttestationInfo(Tag.MODULE_HASH);
+                if (modulesDer == null || modulesDer.length == 0) {
+                    Log.w(TAG, "MODULE_HASH supplementary data unavailable");
+                    sModuleHash = new byte[0];
+                    return null;
+                }
+                cached = MessageDigest.getInstance("SHA-256").digest(modulesDer);
+                sModuleHash = cached;
+                return cached;
+            } catch (KeyStoreException | java.security.NoSuchAlgorithmException e) {
+                Log.w(TAG, "Unable to calculate MODULE_HASH from Keystore2", e);
+                sModuleHash = new byte[0];
+                return null;
+            } catch (RuntimeException e) {
+                Log.w(TAG, "MODULE_HASH query failed", e);
+                sModuleHash = new byte[0];
+                return null;
+            }
+        }
+    }
 
     public static void setTeeBroken(boolean broken) {
         sTeeBroken = broken;
@@ -57,19 +103,31 @@ public final class AttestationUtils {
         if (sBootHashFallback) sBootHash = null;
     }
 
+    public static boolean isNullOrZeroBootKey(byte[] key) {
+        if (key == null) return true;
+        for (byte value : key) {
+            if (value != 0) return false;
+        }
+        return true;
+    }
+
+    public static boolean isNullOrZeroBootHash(byte[] hash) {
+        return isNullOrZeroBootKey(hash);
+    }
+
     public static byte[] getBootKey() {
         byte[] key = sBootKey;
-        if (key != null) return key;
+        if (!isNullOrZeroBootKey(key)) return key;
         synchronized (AttestationUtils.class) {
             key = sBootKey;
-            if (key == null) {
+            if (isNullOrZeroBootKey(key)) {
                 key = getBootKeyFromProp();
                 boolean fromKeybox = false;
-                if (key == null) {
+                if (isNullOrZeroBootKey(key)) {
                     key = getBootKeyFromKeybox();
                     fromKeybox = key != null;
                 }
-                if (key == null) key = loadOrCreatePersisted(BOOT_KEY_FILE);
+                if (isNullOrZeroBootKey(key)) key = loadOrCreatePersisted(BOOT_KEY_FILE);
                 sBootKeyFallback = fromKeybox;
                 sBootKey = key;
             }
@@ -156,22 +214,22 @@ public final class AttestationUtils {
 
     public static byte[] getBootHash() {
         byte[] hash = sBootHash;
-        if (hash != null) return hash;
+        if (!isNullOrZeroBootHash(hash)) return hash;
         synchronized (AttestationUtils.class) {
             hash = sBootHash;
-            if (hash == null) {
+            if (isNullOrZeroBootHash(hash)) {
                 hash = getBootHashFromProp();
-                if (hash == null) hash = readPersisted(HBK_FILE);
-                if (hash == null && !sTeeBroken) {
+                if (isNullOrZeroBootHash(hash)) hash = readPersisted(HBK_FILE);
+                if (isNullOrZeroBootHash(hash) && !sTeeBroken) {
                     hash = extractBootHashFromTee();
-                    if (hash != null) writePersisted(HBK_FILE, hash);
+                    if (!isNullOrZeroBootHash(hash)) writePersisted(HBK_FILE, hash);
                 }
                 boolean fromKeybox = false;
-                if (hash == null) {
+                if (isNullOrZeroBootHash(hash)) {
                     hash = deriveBootHashFromKeybox();
                     fromKeybox = hash != null;
                 }
-                if (hash == null) {
+                if (isNullOrZeroBootHash(hash)) {
                     Log.w(TAG, "Failed to get boot hash from prop, disk, TEE, and keybox, using random bytes");
                     hash = generateRandomBytes(32);
                     writePersisted(HBK_FILE, hash);
@@ -192,14 +250,14 @@ public final class AttestationUtils {
             return;
         }
         hash = readPersisted(HBK_FILE);
-        if (hash != null) {
+        if (!isNullOrZeroBootHash(hash)) {
             sBootHash = hash;
             Log.i(TAG, "initBootHash: Boot hash loaded from disk: " + bytesToHex(hash));
             return;
         }
         Log.i(TAG, "initBootHash: No prop or disk state, attempting TEE extraction");
         hash = extractBootHashFromTee();
-        if (hash != null) {
+        if (!isNullOrZeroBootHash(hash)) {
             sBootHashFallback = false;
             sBootHash = hash;
             writePersisted(HBK_FILE, hash);
@@ -308,7 +366,8 @@ public final class AttestationUtils {
             return null;
         }
         try {
-            return hexStringToByteArray(digest);
+            byte[] hash = hexStringToByteArray(digest);
+            return isNullOrZeroBootHash(hash) ? null : hash;
         } catch (Exception e) {
             Log.e(TAG, "Failed to parse vbmeta.digest", e);
             return null;
@@ -329,26 +388,217 @@ public final class AttestationUtils {
     }
 
     public static int getAttestVersion() {
-        switch (Build.VERSION.SDK_INT) {
-            case Build.VERSION_CODES.Q:
-            case Build.VERSION_CODES.R:
-                return 4;
-            case Build.VERSION_CODES.S:
-            case Build.VERSION_CODES.S_V2:
-                return 100;
-            case Build.VERSION_CODES.TIRAMISU:
-                return 200;
-            case Build.VERSION_CODES.UPSIDE_DOWN_CAKE:
-            case Build.VERSION_CODES.VANILLA_ICE_CREAM:
-                return 300;
-            default:
-                return 400;
+        final int sdkVersion = getSdkAttestVersion();
+        final int halVersion = getKeyMintAidlVersion();
+        if (halVersion > 0 && sdkVersion >= 100) {
+            return Math.min(sdkVersion, halVersion * 100);
         }
+        final int firstApiLevel = SystemProperties.getInt("ro.product.first_api_level", -1);
+        if (firstApiLevel > 0) {
+            return apiLevelToAttestVersion(firstApiLevel);
+        }
+        return sdkVersion;
     }
 
     public static int getKeymasterVersion() {
         int attestVersion = getAttestVersion();
         return attestVersion == 4 ? 41 : attestVersion;
+    }
+
+    private static int getSdkAttestVersion() {
+        return apiLevelToAttestVersion(Build.VERSION.SDK_INT);
+    }
+
+    private static int apiLevelToAttestVersion(int apiLevel) {
+        switch (apiLevel) {
+            case 29:
+            case 30:
+                return 4;
+            case 31:
+            case 32:
+                return 100;
+            case 33:
+                return 200;
+            case 34:
+            case 35:
+                return 300;
+            case 36:
+                return 400;
+            default:
+                return apiLevel >= 37 ? 500 : 400;
+        }
+    }
+
+    private static int getKeyMintAidlVersion() {
+        int cached = sKeyMintAidlVersion;
+        if (cached != 0) return cached;
+        synchronized (AttestationUtils.class) {
+            cached = sKeyMintAidlVersion;
+            if (cached != 0) return cached;
+
+            int declared = findDeclaredKeyMintVersion();
+            if (declared < 1) declared = findVintfKeyMintVersion();
+            final int running = findRunningKeyMintVersion();
+            final int detected = declared > 0
+                    ? (running > 0 ? Math.min(declared, running) : declared)
+                    : running;
+            if (detected > 0) {
+                sKeyMintAidlVersion = detected;
+                Log.i(TAG, "KeyMint default HAL version: VINTF=" + declared
+                        + ", runtime=" + running + ", effective=" + detected);
+                return detected;
+            }
+            sKeyMintAidlVersion = -1;
+            Log.w(TAG, "KeyMint HAL version unavailable; using Android SDK fallback");
+            return -1;
+        }
+    }
+
+    private static int findVintfKeyMintVersion() {
+        try {
+            String[] entries = VintfObject.getHalNamesAndVersions();
+            if (entries == null) return -1;
+            int version = -1;
+            for (String entry : entries) {
+                if (entry == null) continue;
+                String prefix = "android.hardware.security.keymint@";
+                if (!entry.startsWith(prefix)) continue;
+                try {
+                    int v = Integer.parseInt(entry.substring(prefix.length()));
+                    if (v > 0 && v < 100) version = minKnownVersion(version, v);
+                } catch (NumberFormatException ignored) {
+                    // Unversioned HAL entries are normal on older platforms.
+                }
+            }
+            return version;
+        } catch (RuntimeException | LinkageError e) {
+            Log.d(TAG, "Unable to query VINTF HAL versions", e);
+            return -1;
+        }
+    }
+
+    private static int findRunningKeyMintVersion() {
+        try {
+            IBinder binder = ServiceManager.checkService(
+                    "android.hardware.security.keymint.IKeyMintDevice/default");
+            if (binder == null) return -1;
+            IKeyMintDevice device = IKeyMintDevice.Stub.asInterface(binder);
+            int version = device.getInterfaceVersion();
+            return version > 0 && version < 100 ? version : -1;
+        } catch (Exception | LinkageError e) {
+            Log.d(TAG, "Unable to query runtime KeyMint HAL version", e);
+            return -1;
+        }
+    }
+
+    private static int findDeclaredKeyMintVersion() {
+        final String[] dirs = {
+                "/vendor/etc/vintf", "/odm/etc/vintf",
+                "/system/etc/vintf", "/system_ext/etc/vintf"
+        };
+        int version = -1;
+        for (String dir : dirs) {
+            version = minKnownVersion(version,
+                    readKeyMintVersionFromManifest(new File(dir, "manifest.xml")));
+
+            String sku = SystemProperties.get("ro.boot.product.hardware.sku", "");
+            if (!sku.isEmpty() && sku.matches("[A-Za-z0-9_.-]+")) {
+                version = minKnownVersion(version, readKeyMintVersionFromManifest(
+                        new File(dir, "manifest_" + sku + ".xml")));
+            }
+            File[] fragments = new File(dir, "manifest").listFiles();
+            if (fragments == null) continue;
+            for (File fragment : fragments) {
+                if (fragment.isFile() && fragment.getName().endsWith(".xml")) {
+                    version = minKnownVersion(version,
+                            readKeyMintVersionFromManifest(fragment));
+                }
+            }
+        }
+        return version;
+    }
+
+    private static int minKnownVersion(int a, int b) {
+        return a < 1 ? b : (b < 1 ? a : Math.min(a, b));
+    }
+
+    private static int readKeyMintVersionFromManifest(File file) {
+        if (!file.isFile()) return -1;
+        int found = -1;
+        try (FileInputStream stream = new FileInputStream(file)) {
+            XmlPullParser parser = Xml.newPullParser();
+            parser.setInput(stream, "UTF-8");
+            int halDepth = -1;
+            int interfaceDepth = -1;
+            boolean aidl = false;
+            String halName = null;
+            String versionText = null;
+            String interfaceName = null;
+            boolean defaultInstance = false;
+            boolean matched = false;
+            for (int event = parser.getEventType(); event != XmlPullParser.END_DOCUMENT;
+                    event = parser.next()) {
+                if (event == XmlPullParser.START_TAG) {
+                    String tag = parser.getName();
+                    if ("hal".equals(tag) && halDepth < 0) {
+                        halDepth = parser.getDepth();
+                        aidl = "aidl".equals(parser.getAttributeValue(null, "format"));
+                        halName = null;
+                        versionText = null;
+                        matched = false;
+                    } else if (aidl && halDepth > 0) {
+                        if ("interface".equals(tag)) {
+                            interfaceDepth = parser.getDepth();
+                            interfaceName = null;
+                            defaultInstance = false;
+                        } else if ("name".equals(tag)) {
+                            String value = parser.nextText().trim();
+                            if (interfaceDepth > 0) interfaceName = value;
+                            else if (parser.getDepth() == halDepth + 1) halName = value;
+                        } else if ("version".equals(tag)
+                                && parser.getDepth() == halDepth + 1) {
+                            versionText = parser.nextText().trim();
+                        } else if ("instance".equals(tag) && interfaceDepth > 0) {
+                            defaultInstance |= "default".equals(parser.nextText().trim());
+                        } else if ("fqname".equals(tag)) {
+                            String value = parser.nextText().trim();
+                            if (value.equals("IKeyMintDevice/default")
+                                    || value.endsWith("::IKeyMintDevice/default")) {
+                                matched = true;
+                            }
+                        }
+                    }
+                } else if (event == XmlPullParser.END_TAG) {
+                    String tag = parser.getName();
+                    if (interfaceDepth > 0 && "interface".equals(tag)
+                            && parser.getDepth() == interfaceDepth) {
+                        matched |= "IKeyMintDevice".equals(interfaceName) && defaultInstance;
+                        interfaceDepth = -1;
+                    } else if (halDepth > 0 && "hal".equals(tag)
+                            && parser.getDepth() == halDepth) {
+                        if (aidl && "android.hardware.security.keymint".equals(halName)
+                                && matched) {
+                            int parsed = 1; // AIDL VINTF defaults to version 1.
+                            if (versionText != null) {
+                                try {
+                                    parsed = Integer.parseInt(versionText);
+                                } catch (NumberFormatException e) {
+                                    parsed = -1;
+                                }
+                            }
+                            if (parsed > 0 && parsed < 100) {
+                                found = minKnownVersion(found, parsed);
+                            }
+                        }
+                        halDepth = -1;
+                        interfaceDepth = -1;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.d(TAG, "Unable to parse VINTF manifest " + file.getPath(), e);
+        }
+        return found;
     }
 
     /**
