@@ -82,7 +82,22 @@ final class DisplayEngineController extends TintController {
                 ? (float) Math.pow(mValue, SRGB_GAMMA) : mValue);
         applySaturation(mMatrix, mSaturation);
 
+        clampNegativeOffsets(mMatrix);
         normalize(mMatrix);
+    }
+
+    /**
+     * Drops the negative offsets the contrast step adds. MediaTek's display driver writes
+     * the offset row into 26-bit CCORR register fields without handling the sign, and a
+     * negative offset there turns the whole screen white. The offsets are below 1.2% of
+     * full scale, so leaving them out barely changes how the modes look.
+     */
+    private static void clampNegativeOffsets(float[] matrix) {
+        for (int i = 12; i < 15; i++) {
+            if (matrix[i] < 0.0f) {
+                matrix[i] = 0.0f;
+            }
+        }
     }
 
     private float channelGain(int channel) {
