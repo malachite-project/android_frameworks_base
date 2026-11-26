@@ -1646,12 +1646,19 @@ public final class ViewRootImpl implements ViewParent,
     /**
      * We have one child
      */
+    private com.android.internal.util.evolution.glass.LiquidTabBars mLiquidTabBars;
+
     public void setView(View view, WindowManager.LayoutParams attrs, View panelParentView,
             int userId) {
         checkThreadCompat();
         synchronized (this) {
             if (mView == null) {
                 mView = view;
+                if (attrs.type >= WindowManager.LayoutParams.FIRST_APPLICATION_WINDOW
+                        && attrs.type <= WindowManager.LayoutParams.LAST_APPLICATION_WINDOW) {
+                    mLiquidTabBars =
+                            com.android.internal.util.evolution.glass.LiquidTabBars.create(mContext);
+                }
 
                 mViewLayoutDirectionInitial = mView.getRawLayoutDirection();
                 mFallbackEventHandler.setView(view);
@@ -4640,6 +4647,9 @@ public final class ViewRootImpl implements ViewParent,
                 || mAttachInfo.mRecomputeGlobalAttributes;
         if (didLayout) {
             performLayout(lp, mWidth, mHeight);
+            if (mLiquidTabBars != null) {
+                mLiquidTabBars.onLayout(host);
+            }
 
             // By this point all views have been sized and positioned
             // We can compute the transparent area
@@ -8463,11 +8473,6 @@ public final class ViewRootImpl implements ViewParent,
         private int processPointerEvent(QueuedInputEvent q) {
             final MotionEvent event = (MotionEvent)q.mEvent;
 
-            if (event.getPointerCount() == 3 && isThreeFingersSwipeActive()) {
-                event.setAction(MotionEvent.ACTION_CANCEL);
-                Log.d(mTag, "canceling motionEvent because of threeGesture detecting");
-            }
-
             // Translate the pointer event for compatibility, if needed.
             if (mTranslator != null) {
                 mTranslator.translateEventInScreenToAppWindow(event);
@@ -8804,6 +8809,10 @@ public final class ViewRootImpl implements ViewParent,
 
             mAttachInfo.mUnbufferedDispatchRequested = false;
             mAttachInfo.mHandlingPointerEvent = true;
+            if (mLiquidTabBars != null && event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN)
+                    && mLiquidTabBars.onTouch(event)) {
+                event.setAction(MotionEvent.ACTION_CANCEL);
+            }
             // If the event was fully handled by the handwriting initiator, then don't dispatch it
             // to the view tree.
             handled = handled || mView.dispatchPointerEvent(event);
@@ -13704,6 +13713,11 @@ public final class ViewRootImpl implements ViewParent,
     }
 
     @Override
+    public void onContentDrawn() {
+        mBlurRegionAggregator.onFrameDraw();
+    }
+
+    @Override
     public void onDescendantUnbufferedRequested() {
         mUnbufferedInputSource = mView.mUnbufferedInputSource;
     }
@@ -14779,14 +14793,5 @@ public final class ViewRootImpl implements ViewParent,
         }
         sDebugWrongThreadInit = enabled;
         return true;
-    }
-
-    private boolean isThreeFingersSwipeActive() {
-        try {
-            return ActivityManager.getService().isThreeFingersSwipeActive();
-        } catch (RemoteException e) {
-            Log.e(mTag, "isThreeFingersSwipeActive exception", e);
-            return false;
-        }
     }
 }

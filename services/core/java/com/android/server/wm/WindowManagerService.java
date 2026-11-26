@@ -886,6 +886,13 @@ public class WindowManagerService extends IWindowManager.Stub
                 EVOLUTION_WINDOW_BLOCK_SCREENRECORD_DETECTION);
         private final Uri mEvolutionHideScreenCaptureStatusUri = Settings.Global.getUriFor(
                 HIDE_SCREEN_CAPTURE_STATUS);
+        private final Uri mWindowIgnoreSecureUri = Settings.Global.getUriFor(
+                Settings.Global.WINDOW_IGNORE_SECURE);
+        private final Uri mLiquidGlassUri = Settings.Secure.getUriFor(LIQUID_GLASS_SETTING);
+        private final Uri mLiquidGlassStyleUri =
+                Settings.Secure.getUriFor(LIQUID_GLASS_STYLE_SETTING);
+        private final Uri mLiquidGlassRefractionUri =
+                Settings.Secure.getUriFor(LIQUID_GLASS_REFRACTION_SETTING);
 
         public SettingsObserver() {
             super(new Handler());
@@ -936,11 +943,24 @@ public class WindowManagerService extends IWindowManager.Stub
                     UserHandle.USER_ALL);
             resolver.registerContentObserver(mEvolutionHideScreenCaptureStatusUri, false, this,
                     UserHandle.USER_ALL);
+            resolver.registerContentObserver(mWindowIgnoreSecureUri, false, this,
+                    UserHandle.USER_ALL);
+            resolver.registerContentObserver(mLiquidGlassUri, false, this, UserHandle.USER_ALL);
+            resolver.registerContentObserver(mLiquidGlassStyleUri, false, this,
+                    UserHandle.USER_ALL);
+            resolver.registerContentObserver(mLiquidGlassRefractionUri, false, this,
+                    UserHandle.USER_ALL);
         }
 
         @Override
         public void onChange(boolean selfChange, Uri uri) {
             if (uri == null) {
+                return;
+            }
+
+            if (mLiquidGlassUri.equals(uri) || mLiquidGlassStyleUri.equals(uri)
+                    || mLiquidGlassRefractionUri.equals(uri)) {
+                syncLiquidGlass(mContext.getContentResolver());
                 return;
             }
 
@@ -993,6 +1013,13 @@ public class WindowManagerService extends IWindowManager.Stub
                 return;
             }
 
+            if (mWindowIgnoreSecureUri.equals(uri)) {
+                synchronized (mGlobalLock) {
+                    mRoot.refreshSecureSurfaceState();
+                }
+                return;
+            }
+
             if (mEvolutionBlockScreenshotDetectionUri.equals(uri)
                     || mEvolutionBlockScreenrecordDetectionUri.equals(uri)
                     || mEvolutionHideScreenCaptureStatusUri.equals(uri)) {
@@ -1022,6 +1049,7 @@ public class WindowManagerService extends IWindowManager.Stub
             updateMagnifyIme();
             updateEvolutionBlockScreenCaptureDetection();
             updateWallpaperZoomEnabled();
+            syncLiquidGlass(mContext.getContentResolver());
         }
 
         void updateWallpaperZoomEnabled() {
@@ -1162,6 +1190,7 @@ public class WindowManagerService extends IWindowManager.Stub
         void updateEvolutionBlockScreenCaptureDetection() {
             final ContentResolver resolver = mContext.getContentResolver();
             final boolean wasRecordDetectionBlocked = isScreenRecordDetectionBlocked();
+            final boolean wasHideScreenCaptureStatus = mEvolutionHideScreenCaptureStatus;
 
             mEvolutionWindowBlockScreenshotDetection = Settings.Global.getInt(
                     resolver, EVOLUTION_WINDOW_BLOCK_SCREENSHOT_DETECTION, 0) != 0;
@@ -1169,6 +1198,15 @@ public class WindowManagerService extends IWindowManager.Stub
                     resolver, EVOLUTION_WINDOW_BLOCK_SCREENRECORD_DETECTION, 0) != 0;
             mEvolutionHideScreenCaptureStatus = Settings.Global.getInt(
                     resolver, HIDE_SCREEN_CAPTURE_STATUS, 0) != 0;
+
+            if (wasHideScreenCaptureStatus != mEvolutionHideScreenCaptureStatus) {
+                // The hide switch also acts as the master switch for secure content capture
+                // (see getDisableSecureWindows()). Re-evaluate existing window surfaces so the
+                // new state applies without restarting apps.
+                synchronized (mGlobalLock) {
+                    mRoot.refreshSecureSurfaceState();
+                }
+            }
 
             // Screen recording detection is state based, so apps that already registered a
             // callback need to be told about the new state right away instead of only
@@ -5271,6 +5309,13 @@ public class WindowManagerService extends IWindowManager.Stub
     }
 
     @Override
+    public int getDefaultDisplayDefaultRotation() {
+        synchronized (mGlobalLock) {
+            return getDefaultDisplayContentLocked().getDisplayRotation().getDefaultRotation();
+        }
+    }
+
+    @Override
     public void setDisplayChangeWindowController(IDisplayChangeWindowController controller) {
         mAtmService.enforceTaskPermission("setDisplayWindowRotationController");
         try {
@@ -7930,6 +7975,34 @@ public class WindowManagerService extends IWindowManager.Stub
     @Override
     public int getDockedStackSide() {
         return 0;
+    }
+
+    // The Liquid Glass switches of Evolver, handed to SurfaceFlinger as properties.
+    private static final String LIQUID_GLASS_SETTING = "liquid_glass";
+    private static final String LIQUID_GLASS_PROPERTY = "persist.sys.evolution.liquid_glass";
+
+    private static final String LIQUID_GLASS_STYLE_SETTING = "liquid_glass_style";
+    private static final String LIQUID_GLASS_STYLE_PROPERTY =
+            "persist.sys.evolution.liquid_glass_style";
+
+    // How strongly the iOS style's glass rims refract, 0-100% of the strongest bend.
+    private static final String LIQUID_GLASS_REFRACTION_SETTING = "liquid_glass_refraction";
+    private static final String LIQUID_GLASS_REFRACTION_PROPERTY =
+            "persist.sys.evolution.liquid_glass_refraction";
+    private static final int LIQUID_GLASS_REFRACTION_DEFAULT = 60;
+
+    private static void syncLiquidGlass(ContentResolver resolver) {
+        final boolean on = Settings.Secure.getIntForUser(resolver, LIQUID_GLASS_SETTING, 0,
+                UserHandle.USER_CURRENT) != 0;
+        SystemProperties.set(LIQUID_GLASS_PROPERTY, on ? "1" : "0");
+        final int style = Settings.Secure.getIntForUser(resolver, LIQUID_GLASS_STYLE_SETTING, 0,
+                UserHandle.USER_CURRENT);
+        SystemProperties.set(LIQUID_GLASS_STYLE_PROPERTY, style == 1 ? "cos" : "ios");
+        final int refraction = Settings.Secure.getIntForUser(resolver,
+                LIQUID_GLASS_REFRACTION_SETTING, LIQUID_GLASS_REFRACTION_DEFAULT,
+                UserHandle.USER_CURRENT);
+        SystemProperties.set(LIQUID_GLASS_REFRACTION_PROPERTY,
+                Integer.toString(Math.max(0, Math.min(100, refraction))));
     }
 
     void setForceDesktopModeOnExternalDisplays(boolean forceDesktopModeOnExternalDisplays) {
@@ -11610,9 +11683,20 @@ public class WindowManagerService extends IWindowManager.Stub
         }
     }
 
+    /**
+     * Whether secure windows should be treated as non-secure.
+     *
+     * <p>True when the user enabled "Hide screen capture status" (which mirrors
+     * DisableFlagSecure and also allows capturing protected content), when the separate
+     * "Ignore secure window flags" option is enabled, or when the debuggable-only
+     * {@code DISABLE_SECURE_WINDOWS} setting is on.
+     */
     boolean getDisableSecureWindows() {
-        return Settings.Global.getInt(mContext.getContentResolver(),
-                Settings.Global.WINDOW_IGNORE_SECURE, 0) == 1 || mDisableSecureWindows;
+        // Keep the cached hide flag first so enabling it avoids a Settings lookup here.
+        return mEvolutionHideScreenCaptureStatus
+                || Settings.Global.getInt(mContext.getContentResolver(),
+                        Settings.Global.WINDOW_IGNORE_SECURE, 0) == 1
+                || mDisableSecureWindows;
     }
 
     /**

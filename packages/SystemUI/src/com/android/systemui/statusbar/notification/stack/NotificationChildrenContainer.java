@@ -1835,6 +1835,20 @@ public class NotificationChildrenContainer extends ViewGroup
         }
     }
 
+    /** Propagates the blur region fade to the group's child rows. */
+    public void setBlurRegionFade(float fade) {
+        for (ExpandableNotificationRow child : mAttachedChildren) {
+            child.setBlurRegionFade(fade);
+        }
+    }
+
+    /** Propagates blur region suppression to the group's child rows. */
+    public void setBlurRegionSuppressed(boolean suppressed) {
+        for (ExpandableNotificationRow child : mAttachedChildren) {
+            child.setBlurRegionSuppressed(suppressed);
+        }
+    }
+
     /**
      * Spacing needed in addition to {@link #mCollapsedHeaderMargin} when the group is expanded, to
      * accommodate the full header. It doesn't include the spacing needed for the first divider.

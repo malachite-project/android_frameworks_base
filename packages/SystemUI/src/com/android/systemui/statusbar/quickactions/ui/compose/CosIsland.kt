@@ -92,7 +92,18 @@ internal object CosIsland {
     private val PressDown = CubicBezierEasing(0.4f, 0f, 0.2f, 1f)
     private val PressUp = CubicBezierEasing(0f, 0f, 0.2f, 1f)
 
-    fun height(hole: Dp): Dp = maxOf(MinHeight, hole + 4.dp)
+    /**
+     * Calls get a taller, wider pill: the proximity sensor sits by the camera, so the bigger pill
+     * lets a tap land away from it instead of blanking the screen mid-call.
+     */
+    val CallExtraHeight = 10.dp
+    val CallMinWidth = 150.dp
+
+    /** Island height around a camera [hole], scaled by the user's height [scale] but never
+     *  shorter than the hole itself, and taller for a call when [tall]. */
+    fun height(hole: Dp, scale: Float = 1f, tall: Boolean = false): Dp =
+        maxOf(hole, maxOf(MinHeight, hole + 4.dp) * scale) +
+            if (tall) CallExtraHeight else 0.dp
 
     internal suspend fun press(scale: Animatable<Float, *>, down: Boolean) {
         if (down) scale.animateTo(0.98f, tween(200, easing = PressDown))
@@ -108,11 +119,14 @@ internal fun CosIslandShell(
     moons: Boolean,
     onGone: () -> Unit,
     modifier: Modifier = Modifier,
+    tall: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val density = LocalDensity.current
     val holePx = with(density) { hole.toPx() }
-    val heightPx = with(density) { CosIsland.height(hole).toPx() }
+    val (_, heightScale) = rememberDynamicIslandSizeScale()
+    val heightPx = with(density) { CosIsland.height(hole, heightScale, tall).toPx() }
+    val currentHeightPx by rememberUpdatedState(heightPx)
     val extraPx = with(density) { CosIsland.ExtraWidth.toPx() }
     val switchPx = with(density) { CosIsland.SwitchWidth.toPx() }
     val maxWidthPx = with(density) { CosIsland.MaxWidth.roundToPx() }
@@ -153,7 +167,7 @@ internal fun CosIslandShell(
         launch { width.animateTo(holePx, tween(50, easing = CosIsland.Move)) }
         height.animateTo(holePx, tween(50, easing = CosIsland.Move))
         launch { width.animateTo(target + extraPx, tween(300, easing = CosIsland.Move)) }
-        launch { height.animateTo(heightPx, tween(300, easing = CosIsland.Move)) }
+        launch { height.animateTo(currentHeightPx, tween(300, easing = CosIsland.Move)) }
         launch { alpha.animateTo(1f, tween(250, delayMillis = 50, easing = CosIsland.Move)) }
         launch { blur.animateTo(0f, tween(250, delayMillis = 50, easing = CosIsland.Move)) }
         scale.animateTo(1.1f, tween(300, easing = CosIsland.Move))
@@ -208,6 +222,16 @@ internal fun CosIslandShell(
                     }
                 }
                 busy = false
+            }
+    }
+
+    // Follow the height scale live while the island is up.
+    LaunchedEffect(Unit) {
+        snapshotFlow { currentHeightPx to busy }
+            .collectLatest { (h, isBusy) ->
+                if (!isBusy && currentVisible && height.value > 0f) {
+                    height.animateTo(h, tween(300, easing = CosIsland.Move))
+                }
             }
     }
 

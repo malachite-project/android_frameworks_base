@@ -13,8 +13,11 @@ package com.android.appdatabackup
 
 import android.app.appbackup.BackupRecord
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -46,8 +49,24 @@ fun BackupScreen(viewModel: BackupViewModel, onBack: () -> Unit) {
     var appQuery by rememberSaveable { mutableStateOf("") }
     var backupQuery by rememberSaveable { mutableStateOf("") }
     var showOptions by rememberSaveable { mutableStateOf(false) }
+    var systemType by rememberSaveable { mutableIntStateOf(0) }
+    var swiftType by rememberSaveable { mutableIntStateOf(0) }
     var action by rememberSaveable { mutableStateOf<BackupAction?>(null) }
     var record by rememberSaveable { mutableStateOf<BackupRecord?>(null) }
+    var showSwiftImport by rememberSaveable { mutableStateOf(false) }
+    var exportRecord by rememberSaveable { mutableStateOf<BackupRecord?>(null) }
+    var showSwiftExport by rememberSaveable { mutableStateOf(false) }
+    val importPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) {
+        if (it != null) viewModel.importSwift(it)
+    }
+    val systemImportPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) {
+        if (it != null) viewModel.importSwiftSystemData(swiftType, it)
+    }
+    val exportPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) {
+        val selected = exportRecord
+        if (it != null && selected != null) viewModel.exportSwift(selected, it)
+        exportRecord = null
+    }
     val appList = rememberLazyListState()
     val backupList = rememberLazyListState()
     val snackbar = remember { SnackbarHostState() }
@@ -173,6 +192,19 @@ fun BackupScreen(viewModel: BackupViewModel, onBack: () -> Unit) {
                                     if (library) archivedBytes else selectedBytes, library)
                             }
                         }
+                        if (!library) item(key = "system_data") {
+                            SystemDataCards(enabled = !state.busy, onBackup = { systemType = it })
+                        }
+                        if (library) {
+                            item(key = "swift_import") {
+                                OutlinedButton(onClick = { showSwiftImport = true }, enabled = !state.busy,
+                                    modifier = Modifier.padding(bottom = 12.dp)) {
+                                    Icon(Icons.Rounded.FolderOpen, null)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(stringResource(R.string.swift_import))
+                                }
+                            }
+                        }
                         if (!allEmpty || query.isNotEmpty()) {
                             item(key = "search") {
                                 OutlinedTextField(value = query, onValueChange = {
@@ -240,6 +272,7 @@ fun BackupScreen(viewModel: BackupViewModel, onBack: () -> Unit) {
                                     onRestore = { chooseAction(entry, BackupAction.Restore) },
                                     onVerify = { chooseAction(entry, BackupAction.Verify) },
                                     onDelete = { chooseAction(entry, BackupAction.Delete) },
+                                    onExport = { exportRecord = entry; showSwiftExport = true },
                                     modifier = Modifier.padding(bottom = 8.dp).animateItem(
                                         fadeInSpec = motion.defaultEffectsSpec(),
                                         placementSpec = motion.defaultSpatialSpec(),
@@ -257,10 +290,53 @@ fun BackupScreen(viewModel: BackupViewModel, onBack: () -> Unit) {
             }
         }
     }
+    if (showSwiftImport && !state.busy) {
+        AlertDialog(onDismissRequest = { showSwiftImport = false },
+            title = { Text(stringResource(R.string.swift_import)) },
+            text = {
+                Column(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(if (swiftType == 0) R.string.swift_import_help else R.string.swift_system_import_help))
+                    (listOf(0) + systemDataTypes).forEach { type ->
+                        TextButton(onClick = { swiftType = type }) {
+                            RadioButton(selected = swiftType == type, onClick = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(stringResource(if (type == 0) R.string.tab_apps else systemDataLabel(type)))
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = {
+                showSwiftImport = false
+                if (swiftType == 0) importPicker.launch(null) else systemImportPicker.launch(arrayOf("*/*"))
+            }) {
+                Text(stringResource(if (swiftType == 0) R.string.swift_choose_folder else R.string.swift_choose_file))
+            } },
+            dismissButton = { TextButton(onClick = { showSwiftImport = false }) {
+                Text(stringResource(R.string.cancel))
+            } })
+    }
+    if (showSwiftExport && exportRecord != null && !state.busy) {
+        AlertDialog(onDismissRequest = { showSwiftExport = false; exportRecord = null },
+            title = { Text(stringResource(R.string.swift_export)) },
+            text = { Text(stringResource(R.string.swift_export_help)) },
+            confirmButton = { TextButton(onClick = { showSwiftExport = false; exportPicker.launch(null) }) {
+                Text(stringResource(R.string.swift_choose_folder))
+            } },
+            dismissButton = { TextButton(onClick = { showSwiftExport = false; exportRecord = null }) {
+                Text(stringResource(R.string.cancel))
+            } })
+    }
     if (showOptions && !state.busy) {
         BackupOptionsSheet(state.selected.size, onDismiss = { showOptions = false }, onConfirm = {
             showOptions = false
             viewModel.backup(it)
+        })
+    }
+    if (systemType != 0 && !state.busy) {
+        BackupOptionsSheet(1, dataType = systemType, onDismiss = { systemType = 0 }, onConfirm = {
+            viewModel.backupSystemData(systemType, it)
+            systemType = 0
         })
     }
     if (currentRecord != null && action != null && !state.busy) {

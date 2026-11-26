@@ -26,6 +26,7 @@ import static android.view.MotionEvent.ACTION_UP;
 import static com.android.app.tracing.TrackGroupUtils.trackGroup;
 import static com.android.internal.jank.InteractionJankMonitor.CUJ_NOTIFICATION_SHADE_SCROLL_FLING;
 import static com.android.internal.jank.InteractionJankMonitor.CUJ_SHADE_CLEAR_ALL;
+import static com.android.systemui.Flags.lockscreenBlurForNotifications;
 import static com.android.systemui.Flags.notificationDebugDrawing;
 import static com.android.systemui.Flags.physicalNotificationMovement;
 import static com.android.systemui.Flags.widerLandscapeNotifications;
@@ -97,6 +98,7 @@ import com.android.systemui.Dependency;
 import com.android.systemui.Dumpable;
 import com.android.systemui.ExpandHelper;
 import com.android.systemui.notifications.ui.YSpace;
+import com.android.systemui.qs.shared.style.LiquidGlass;
 import com.android.systemui.res.R;
 import com.android.systemui.scene.shared.flag.SceneContainerFlag;
 import com.android.systemui.shade.QSHeaderBoundsProvider;
@@ -554,6 +556,8 @@ public class NotificationStackScrollLayout
 
     /** Radius of the blur effect applied to the content of the NSSL. */
     private float mBlurRadius = 0f;
+    private NotificationGlassPress mGlassPress;
+    private float mBlurFade = 1f;
     @Nullable private RenderEffect mBlurEffect = null;
 
     /**
@@ -627,6 +631,11 @@ public class NotificationStackScrollLayout
      */
     private HeightSuppressionState mSuppressHeightState = HeightSuppressionState.None;
     private boolean mIsOnLockscreen;
+    /** Whether child rows have been told to drop their background blur regions. */
+    private boolean mBlurRegionsSuppressed;
+    /** Whether this stack, or an ancestor, is hidden, which a row's blur region does not follow. */
+    private boolean mBlurRegionsHidden;
+    private float mBlurRegionFade = 1f;
 
     /** Pass splitShadeStateController to view and update split shade */
     public void passSplitShadeStateController(SplitShadeStateController splitShadeStateController) {
@@ -987,8 +996,10 @@ public class NotificationStackScrollLayout
         mStackScrollAlgorithm.initView(context);
         mStateAnimator.initView(context);
         mAmbientState.reload(context);
-        mPaddingBetweenElements = Math.max(1,
-                res.getDimensionPixelSize(R.dimen.notification_divider_height));
+        // isOnShade starts the observers notificationGap reads.
+        LiquidGlass.isOnShade(context);
+        mPaddingBetweenElements = Math.max(1, LiquidGlass.notificationGap(res,
+                res.getDimensionPixelSize(R.dimen.notification_divider_height)));
         mMinimumSpacingBetweenChildren = Math.max(1,
                 res.getDimensionPixelSize(R.dimen.notification_minimum_spacing_between_children));
         mMinTopOverScrollToEscape = res.getDimensionPixelSize(
@@ -1730,10 +1741,50 @@ public class NotificationStackScrollLayout
     @Override
     public void setAlpha(float alpha) {
         super.setAlpha(alpha);
+        updateChildrenBlurRegionSuppression(alpha * mBlurFade);
         if (Trace.isEnabled()) {
             Trace.setCounter(
                     trackGroup(/* groupName= */ "shade", /* trackName= */ "NSSLResultingAlpha"),
                     (int) (alpha * 100));
+        }
+    }
+
+    @Override
+    public void onVisibilityAggregated(boolean isVisible) {
+        super.onVisibilityAggregated(isVisible);
+        // The bouncer hides the stack without fading it; the rows' window blur would stay behind
+        // as empty glass cards under it.
+        if (mBlurRegionsHidden != !isVisible) {
+            mBlurRegionsHidden = !isVisible;
+            updateChildrenBlurRegionSuppression(getAlpha() * mBlurFade);
+        }
+    }
+
+    /** Drop child blur regions while faded out (they ignore ancestor alpha), restore when visible. */
+    private void updateChildrenBlurRegionSuppression(float alpha) {
+        if (!lockscreenBlurForNotifications()) {
+            return;
+        }
+        if (mBlurRegionFade != alpha) {
+            mBlurRegionFade = alpha;
+            for (int i = 0; i < getChildCount(); i++) {
+                if (getChildAt(i) instanceof ActivatableNotificationView anv) {
+                    anv.setBlurRegionFade(alpha);
+                }
+            }
+        }
+        // The negative clip (the shade opening over the stack) cuts the rows' content out, but
+        // not their window blur, which would stay behind as empty glass cards.
+        boolean suppressed =
+                alpha < 0.01f || mShouldUseNegativeRoundedRectClipping || mBlurRegionsHidden;
+        if (mBlurRegionsSuppressed == suppressed) {
+            return;
+        }
+        mBlurRegionsSuppressed = suppressed;
+        for (int i = 0; i < getChildCount(); i++) {
+            if (getChildAt(i) instanceof ActivatableNotificationView anv) {
+                anv.setBlurRegionSuppressed(suppressed);
+            }
         }
     }
 
@@ -3489,6 +3540,10 @@ public class NotificationStackScrollLayout
             if (SceneContainerFlag.isEnabled()) {
                 row.setOnKeyguard(mIsOnLockscreen);
             }
+            if (mBlurRegionsSuppressed) {
+                row.setBlurRegionSuppressed(true);
+            }
+            row.setBlurRegionFade(mBlurRegionFade);
         }
         generateAddAnimation(child, false /* fromMoreCard */);
         updateAnimationState(child);
@@ -4068,6 +4123,10 @@ public class NotificationStackScrollLayout
 
     @Override
     public boolean dispatchTouchEvent(MotionEvent ev) {
+        if (LiquidGlass.isOnShade(mContext)) {
+            if (mGlassPress == null) mGlassPress = new NotificationGlassPress(this);
+            mGlassPress.onTouch(this, ev);
+        }
         if (NsslTouchDispatchFix.isEnabled()) {
             // IMPORTANT: Dispatch to super first to handle standard touch routing.
             // This triggers side effects on subsequent events (like ACTION_MOVE), potentially
@@ -6670,6 +6729,7 @@ public class NotificationStackScrollLayout
         if (Objects.equals(mScrollViewFields.negativeClippingShape, shape)) return;
         mScrollViewFields.negativeClippingShape = shape;
         mShouldUseNegativeRoundedRectClipping = shape != null;
+        updateChildrenBlurRegionSuppression(getAlpha() * mBlurFade);
         mNegativeRoundedClipPath.reset();
         if (shape != null) {
             ShadeScrimBounds bounds = shape.getBounds();
@@ -6694,6 +6754,20 @@ public class NotificationStackScrollLayout
     }
 
     private void updateBlurEffect() {
+        if (mBlurRadius > 0 && LiquidGlass.isOnShade(mContext)) {
+            // The cards' window blur is not part of this view's content, so a RenderEffect blur
+            // would leave it sharp under the bouncer. Fade the stack with the blur instead.
+            final float max = getResources().getDimensionPixelSize(
+                    R.dimen.max_shade_content_blur_radius) * 0.6f;
+            mBlurFade = 1f - Math.min(1f, mBlurRadius / Math.max(max, 1f));
+            mBlurEffect = null;
+            // The bouncer fades the drawn stack; the cards window blur, the shelf pills
+            // included, has to fade with it or it stays on screen.
+            updateChildrenBlurRegionSuppression(getAlpha() * mBlurFade);
+            return;
+        }
+        mBlurFade = 1f;
+        updateChildrenBlurRegionSuppression(getAlpha());
         if (mBlurRadius > 0) {
             mBlurEffect =
                     RenderEffect.createBlurEffect(mBlurRadius, mBlurRadius, Shader.TileMode.CLAMP);
@@ -6880,22 +6954,25 @@ public class NotificationStackScrollLayout
 
     @Override
     protected void dispatchDraw(@NonNull Canvas canvas) {
-        if (mBlurEffect != null) {
+        if (mBlurEffect != null || mBlurFade < 1f) {
             spewLog("Applying blur RenderEffect to NotificationStackScrollLayout");
-            // reuse the cached RenderNode to blur
-            mBlurNode.setPosition(0, 0, canvas.getWidth(), canvas.getHeight());
-            mBlurNode.setRenderEffect(mBlurEffect);
-            Canvas blurCanvas = mBlurNode.beginRecording();
-            // draw all the children (except HUNs) on the blurred canvas
-            super.dispatchDraw(blurCanvas);
-            mBlurNode.endRecording();
-            // apply clipping to the canvas
-            int saveCount = canvas.save();
-            applyClipToCanvas(canvas);
-            // draw the blurred content to the clipped canvas
-            canvas.drawRenderNode(mBlurNode);
-            // restore the canvas, so it doesn't clip anymore
-            canvas.restoreToCount(saveCount);
+            if (mBlurFade > 0f) {
+                // reuse the cached RenderNode to blur
+                mBlurNode.setPosition(0, 0, canvas.getWidth(), canvas.getHeight());
+                mBlurNode.setRenderEffect(mBlurEffect);
+                mBlurNode.setAlpha(mBlurFade);
+                Canvas blurCanvas = mBlurNode.beginRecording();
+                // draw all the children (except HUNs) on the blurred canvas
+                super.dispatchDraw(blurCanvas);
+                mBlurNode.endRecording();
+                // apply clipping to the canvas
+                int saveCount = canvas.save();
+                applyClipToCanvas(canvas);
+                // draw the blurred content to the clipped canvas
+                canvas.drawRenderNode(mBlurNode);
+                // restore the canvas, so it doesn't clip anymore
+                canvas.restoreToCount(saveCount);
+            }
             // draw the children that were left out during the dispatchDraw phase
             for (int i = 0; i < getChildCount(); i++) {
                 // TODO(b/388469101) draw these children in z-order
@@ -6929,7 +7006,7 @@ public class NotificationStackScrollLayout
     protected boolean drawChild(Canvas canvas, View child, long drawingTime) {
         boolean shouldUseClipping =
                 mShouldUseRoundedRectClipping || mShouldUseNegativeRoundedRectClipping;
-        if (mBlurEffect != null) {
+        if (mBlurEffect != null || mBlurFade < 1f) {
             if (shouldSkipBlurForChild(child)) {
                 // skip drawing this child during the regular dispatchDraw pass
                 return false;

@@ -21,7 +21,9 @@ import android.graphics.Matrix
 import android.graphics.Path
 import android.graphics.drawable.Animatable
 import android.graphics.drawable.AnimatedVectorDrawable
+import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
+import android.graphics.drawable.VectorDrawable
 import android.text.TextUtils
 import android.util.PathParser
 import androidx.annotation.VisibleForTesting
@@ -38,7 +40,10 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.clickable
@@ -48,11 +53,13 @@ import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.CircleShape
@@ -97,6 +104,7 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.dimensionResource
@@ -114,6 +122,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.Hyphens
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -185,6 +194,18 @@ internal fun colorOSTileRim(): Brush =
  */
 internal val LocalColorOSTileSize = compositionLocalOf { CommonTileDefaults.ColorOSTileHeight }
 
+/**
+ * Caps the icon part of a compact tile ([iconHeight]) to the width it is given, so it stays square
+ * in dense grids, and keeps [labelHeight] below it.
+ */
+internal fun Modifier.capHeightToWidth(iconHeight: Dp, labelHeight: Dp = 0.dp): Modifier =
+    layout { measurable, constraints ->
+        val width = constraints.maxWidth
+        val height = minOf(iconHeight.roundToPx(), width) + labelHeight.roundToPx()
+        val placeable = measurable.measure(Constraints.fixed(width, height))
+        layout(width, height) { placeable.place(0, 0) }
+    }
+
 @Composable
 fun ClassicTileContent(
     label: String,
@@ -250,7 +271,9 @@ fun ClassicTileContent(
     ) {
         Box(
             modifier = Modifier
-                .size(iconBoxSize)
+                .widthIn(max = iconBoxSize)
+                .fillMaxWidth()
+                .aspectRatio(1f)
                 .colorOSPress(pressSource)
                 .then(
                     if (onGlass) {
@@ -418,8 +441,18 @@ fun LargeTileContent(
     lottieSpec: String? = null,
     active: Boolean = false,
     labelMaxLines: Int = 1,
+    // Remix QS styles: the clip and size of the icon target, the icon's size and label styles.
+    iconClip: Shape = iconShape,
+    alwaysBacked: Boolean = false,
+    toggleInteractionSource: MutableInteractionSource? = null,
+    toggleSize: Dp = CommonTileDefaults.ToggleTargetSize,
+    iconSize: Dp = CommonTileDefaults.LargeTileIconSize,
+    labelStyle: TextStyle? = null,
+    secondaryLabelStyle: TextStyle? = null,
+    showChevron: Boolean = false,
 ) {
     val isDualTarget = toggleClick != null
+    val indication = LocalIndication.current
     val colorOSStyle = LocalColorOSQsStyle.current
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -451,9 +484,11 @@ fun LargeTileContent(
             else Modifier
         Box(
             modifier =
-                Modifier.size(CommonTileDefaults.ToggleTargetSize).thenIf(isDualTarget) {
+                Modifier.size(toggleSize).thenIf(alwaysBacked && !isDualTarget) {
+                    Modifier.clip(iconClip).drawBehind { drawRect(animatedBackgroundColor) }
+                }.thenIf(isDualTarget) {
                     Modifier.borderOnFocus(color = focusBorderColor, iconShape.topEnd)
-                        .clip(iconShape)
+                        .clip(iconClip)
                         .then(glassBlurModifier)
                         .drawBehind {
                             if (onGlass) {
@@ -483,6 +518,8 @@ fun LargeTileContent(
                         // apply the squish effect after the bg is drawn
                         .verticalSquish(squishiness)
                         .combinedClickable(
+                            interactionSource = toggleInteractionSource,
+                            indication = if (toggleInteractionSource != null) indication else null,
                             onClick = toggleClick!!,
                             onLongClick = onLongClick,
                             onLongClickLabel = longPressLabel,
@@ -508,14 +545,14 @@ fun LargeTileContent(
                     active = active,
                     offColor = MaterialTheme.colorScheme.onSurface,
                     onColor = colors.icon,
-                    size = CommonTileDefaults.LargeTileIconSize,
+                    size = iconSize,
                     modifier = Modifier.align(Alignment.Center),
                 )
             if (!animated) {
                 SmallTileContent(
                     iconProvider = iconProvider,
                     color = colors.icon,
-                    size = { CommonTileDefaults.LargeTileIconSize },
+                    size = { iconSize },
                     modifier = Modifier.align(Alignment.Center),
                 )
             }
@@ -529,8 +566,19 @@ fun LargeTileContent(
             accessibilityUiState = accessibilityUiState,
             isVisible = isVisible,
             labelMaxLines = labelMaxLines,
+            labelStyle = labelStyle,
+            secondaryLabelStyle = secondaryLabelStyle,
             modifier = Modifier.weight(1f).bounceScale(TransformOrigin(0f, .5f), textScale),
         )
+
+        if (showChevron) {
+            Image(
+                painter = painterResource(R.drawable.ic_chevron_right),
+                contentDescription = null,
+                colorFilter = ColorFilter.tint(colors.label.copy(alpha = .6f)),
+                modifier = Modifier.size(CommonTileDefaults.ChevronSize),
+            )
+        }
 
         if (sideDrawable != null) {
             Image(
@@ -552,6 +600,8 @@ fun LargeTileLabels(
     isVisible: () -> Boolean = { true },
     accessibilityUiState: AccessibilityUiState? = null,
     labelMaxLines: Int = 1,
+    labelStyle: TextStyle? = null,
+    secondaryLabelStyle: TextStyle? = null,
 ) {
     val animatedLabelColor by animateColorAsState(colors.label, label = "QSTileLabelColor")
     val animatedSecondaryLabelColor by
@@ -559,10 +609,13 @@ fun LargeTileLabels(
     Column(verticalArrangement = Arrangement.Center, modifier = modifier.fillMaxHeight()) {
         TileLabel(
             text = label,
-            style = MaterialTheme.typography.titleSmallEmphasized.copy(
-                fontWeight =
-                    if (LocalColorOSQsStyle.current) FontWeight.Medium else FontWeight.SemiBold,
-            ),
+            style =
+                labelStyle
+                    ?: MaterialTheme.typography.titleSmallEmphasized.copy(
+                        fontWeight =
+                            if (LocalColorOSQsStyle.current) FontWeight.Medium
+                            else FontWeight.SemiBold,
+                    ),
             color = { animatedLabelColor },
             isVisible = isVisible,
             maxLines = labelMaxLines,
@@ -571,9 +624,11 @@ fun LargeTileLabels(
             TileLabel(
                 secondaryLabel ?: "",
                 color = { animatedSecondaryLabelColor },
-                style = MaterialTheme.typography.labelMedium.copy(
-                    fontWeight = FontWeight.Normal,
-                ),
+                style =
+                    secondaryLabelStyle
+                        ?: MaterialTheme.typography.labelMedium.copy(
+                            fontWeight = FontWeight.Normal,
+                        ),
                 isVisible = isVisible,
                 modifier =
                     Modifier.thenIf(
@@ -596,7 +651,7 @@ fun NothingCircleTileContent(
     val context = LocalContext.current
     val icon = iconProvider(context)
     val isActive = visualState == android.service.quicksettings.Tile.STATE_ACTIVE
-    val iconColor = if (isActive) Color.Black else Color.White
+    val iconColor = if (isActive) NothingQsColors.contentOnActive else NothingQsColors.content
     val animatedIconColor by animateColorAsState(iconColor, label = "NothingCircleIconColor")
     val iconSize = 28.dp
 
@@ -804,7 +859,19 @@ fun SmallTileContent(
             contentScale = ContentScale.Crop,
         )
     } else {
-        Icon(icon = icon, tint = animatedColor, modifier = iconModifier)
+        // painterResource only supports vector and bitmap drawables
+        val safeIcon =
+            if (
+                icon is Icon.Resource &&
+                    loadedDrawable != null &&
+                    loadedDrawable !is VectorDrawable &&
+                    loadedDrawable !is BitmapDrawable
+            ) {
+                Icon.Loaded(loadedDrawable, icon.contentDescription, icon.resId)
+            } else {
+                icon
+            }
+        Icon(icon = safeIcon, tint = animatedColor, modifier = iconModifier)
     }
 }
 

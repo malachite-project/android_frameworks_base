@@ -270,7 +270,7 @@ constructor(
             )
         var combinedBlur =
             (expansionRadius * INTERACTION_BLUR_FRACTION +
-                animationRadius * ANIMATION_BLUR_FRACTION)
+                animationRadius * ANIMATION_BLUR_FRACTION * shadeExpansion)
         val qsExpandedRatio =
             ShadeInterpolation.getNotificationScrimAlpha(qsPanelExpansion) * shadeExpansion
         combinedBlur = max(combinedBlur, blurUtils.blurRadiusOfRatio(qsExpandedRatio))
@@ -660,7 +660,10 @@ constructor(
                 }
             }
         } else {
-            animateBlur(false, 0f)
+            if (isBlurred || shadeAnimation.radius != 0f) {
+                shadeAnimation.skipTo(0)
+            }
+            isBlurred = false
             isClosed = true
             isOpen = false
         }

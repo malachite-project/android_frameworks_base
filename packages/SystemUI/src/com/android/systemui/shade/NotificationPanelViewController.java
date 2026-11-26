@@ -524,6 +524,7 @@ public final class NotificationPanelViewController implements
     private final int mDisplayId;
     private boolean mDoubleTapToSleepEnabled;
     private GestureDetector mDoubleTapGesture;
+    private boolean mSleepGestureAllowedForTouch;
     private boolean mTripleTapToFreeformEnabled;
     /** A double tap was detected; a third tap within the double tap timeout opens freeform. */
     private boolean mTripleTapArmed;
@@ -567,6 +568,7 @@ public final class NotificationPanelViewController implements
 
     private boolean mBrightnessControl;
     private boolean mBrightnessControlLockscreen;
+    private boolean mBrightnessControlEngaged;
 
     private FadingEdgeLayout mQsHeaderLayout;
     private ImageView mQsHeaderImageView;
@@ -876,6 +878,9 @@ public final class NotificationPanelViewController implements
                 new GestureDetector.SimpleOnGestureListener() {
             @Override
             public boolean onDoubleTap(MotionEvent e) {
+                if (!mSleepGestureAllowedForTouch || !isSleepGestureAllowed()) {
+                    return false;
+                }
                 if (mTripleTapToFreeformEnabled) {
                     // Wait for triple press otherwise go to sleep
                     mTripleTapArmed = true;
@@ -3171,8 +3176,7 @@ public final class NotificationPanelViewController implements
         return !isDirectionUpwards(x, y);
     }
 
-    @Override
-    public void fling(float vel, boolean expand, boolean expandBecauseOfFalsing) {
+    private void fling(float vel, boolean expand, boolean expandBecauseOfFalsing) {
         fling(vel, expand, 1.0f /* collapseSpeedUpFactor */, expandBecauseOfFalsing);
     }
 
@@ -4078,7 +4082,7 @@ public final class NotificationPanelViewController implements
                 mDeferredDoubleTapSleepRunnable = () -> {
                     mDeferredDoubleTapSleepRunnable = null;
                     mTripleTapArmed = false;
-                    if (mPowerManager != null) {
+                    if (mPowerManager != null && isSleepGestureAllowed()) {
                         mPowerManager.goToSleep(mSystemClock.uptimeMillis());
                     }
                 };
@@ -4094,6 +4098,27 @@ public final class NotificationPanelViewController implements
             mHandler.removeCallbacks(mDeferredDoubleTapSleepRunnable);
             mDeferredDoubleTapSleepRunnable = null;
         }
+    }
+
+    private boolean isSleepGestureAllowed() {
+        // A bare legacy keyguard has an expanded panel height. Its normalized shade amount,
+        // unlike that panel height, is zero until the notification shade is dragged down.
+        return !mPulsing && !mDozing && !mCentralSurfaces.isBouncerShowing()
+                && mShadeRepository.getQsExpansion().getValue() <= 0f
+                && (isKeyguardShowing()
+                        ? mShadeRepository.getLockscreenShadeExpansion().getValue() <= 0f
+                        : isFullyCollapsed());
+    }
+
+    private void cancelSleepGesture(MotionEvent event) {
+        mSleepGestureAllowedForTouch = false;
+        mTripleTapArmed = false;
+        mLastTapUpTime = -1L;
+        cancelDeferredDoubleTapSleep();
+        MotionEvent cancel = MotionEvent.obtain(event);
+        cancel.setAction(MotionEvent.ACTION_CANCEL);
+        mDoubleTapGesture.onTouchEvent(cancel);
+        cancel.recycle();
     }
 
     /**
@@ -4150,6 +4175,10 @@ public final class NotificationPanelViewController implements
         public boolean onInterceptTouchEvent(MotionEvent event) {
             if (!mUseExternalTouch) {
                 return false;
+            }
+
+            if (!isSleepGestureAllowed()) {
+                cancelSleepGesture(event);
             }
 
             // Logging every motion event is very costly, even when tracing/logcat
@@ -4358,14 +4387,20 @@ public final class NotificationPanelViewController implements
                 return false;
             }
 
-            if (!mPulsing && !mDozing) {
-                if (mDoubleTapToSleepEnabled || mTripleTapToFreeformEnabled) {
+            if (mDoubleTapToSleepEnabled || mTripleTapToFreeformEnabled) {
+                if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                    mSleepGestureAllowedForTouch = isSleepGestureAllowed();
+                }
+                mSleepGestureAllowedForTouch &= isSleepGestureAllowed();
+                if (mSleepGestureAllowedForTouch) {
                     if (mTripleTapToFreeformEnabled) {
                         // Run before the detector so the tap that completes a triple tap is not
                         // seen by it before our own tap streak has been updated.
                         handleTripleTapGesture(event);
                     }
                     mDoubleTapGesture.onTouchEvent(event);
+                } else {
+                    cancelSleepGesture(event);
                 }
             }
 
@@ -4373,10 +4408,6 @@ public final class NotificationPanelViewController implements
             if (event.getAction() == MotionEvent.ACTION_UP
                     || event.getAction() == MotionEvent.ACTION_CANCEL) {
                 mBlockingExpansionForCurrentTouch = false;
-                if (mBrightnessControl) {
-                    mCentralSurfaces.onBrightnessChanged(true);
-                    mCentralSurfaces.cancelBrightnessControl();
-                }
             }
             // When touch focus transfer happens, ACTION_DOWN->ACTION_UP may happen immediately
             // without any ACTION_MOVE event.
@@ -4415,24 +4446,33 @@ public final class NotificationPanelViewController implements
                 return false;
             }
             if (mBrightnessControl) {
-                final int actionIndex = event.getActionIndex();
-                final float swipeY = event.getY(actionIndex);
-                if (swipeY < mStatusBarMinHeight &&
-                        (mBarState != KEYGUARD || mBrightnessControlLockscreen)) {
+                final int action = event.getActionMasked();
+                if (mBrightnessControlEngaged) {
                     mCentralSurfaces.brightnessControl(event);
-                    final int action = event.getActionMasked();
-                    if (action == MotionEvent.ACTION_UP
+                    if (action == MotionEvent.ACTION_DOWN
+                            || action == MotionEvent.ACTION_UP
                             || action == MotionEvent.ACTION_CANCEL) {
+                        mBrightnessControlEngaged = false;
                         mCentralSurfaces.onBrightnessChanged(true);
-                    }
+                        mCentralSurfaces.cancelBrightnessControl();
+                     }
                     return true;
+                }
+                if (!handled) {
+                    final int actionIndex = event.getActionIndex();
+                    final float swipeY = event.getY(actionIndex);
+                    if (swipeY < mStatusBarMinHeight &&
+                            ((mBarState != KEYGUARD && isFullyCollapsed()) ||
+                            (mBarState == KEYGUARD && mBrightnessControlLockscreen))) {
+                        if (mCentralSurfaces.brightnessControl(event)) {
+                            mBrightnessControlEngaged = true;
+                            return true;
+                        }
+                    }
                 }
             }
             if (!mHeadsUpTouchHelper.isTrackingHeadsUp() && mQsController.handleTouch(
                     event, isFullyCollapsed(), isShadeOrQsHeightAnimationRunning())) {
-                if (mBrightnessControl) {
-                    mCentralSurfaces.cancelBrightnessControl();
-                }
                 if (event.getActionMasked() != MotionEvent.ACTION_MOVE) {
                     mShadeLog.logMotionEvent(event, "onTouch: handleQsTouch handled event");
                 }

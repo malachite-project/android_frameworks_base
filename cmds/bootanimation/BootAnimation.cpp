@@ -48,6 +48,7 @@
 #include <android-base/properties.h>
 
 #include <ui/DisplayMode.h>
+#include <ui/DisplayState.h>
 #include <ui/PixelFormat.h>
 #include <ui/Rect.h>
 #include <ui/Region.h>
@@ -100,6 +101,8 @@ static constexpr const char* OEM_USERSPACE_REBOOT_ANIMATION_FILE = "/oem/media/u
 static constexpr const char* SYSTEM_USERSPACE_REBOOT_ANIMATION_FILE = "/system/media/userspace-reboot.zip";
 
 static const char BOOTANIM_DATA_DIR_PATH[] = "/data/misc/bootanim";
+// Styles downloaded from Settings, as bootanimation_<name>.zip.
+static const char BOOTANIM_DOWNLOAD_DIR_PATH[] = "/data/misc/bootanim/styles";
 static const char BOOTANIM_TIME_DIR_NAME[] = "time";
 static const char BOOTANIM_TIME_DIR_PATH[] = "/data/misc/bootanim/time";
 static const char CLOCK_FONT_ASSET[] = "images/clock_font.png";
@@ -466,6 +469,29 @@ ui::Size BootAnimation::limitSurfaceSize(int width, int height) const {
     return limited;
 }
 
+// Returns the size BootAnimation should render at. SurfaceFlinger's active
+// DisplayMode is the panel's physical resolution, but WindowManager may have
+// imposed a smaller layer-stack-space rect via setDisplayProjection (e.g. the
+// SystemUI resolution override on an 8K TV). Layers larger than the
+// layer-stack-space rect are clipped by SurfaceFlinger, so render at whichever
+// is in effect right now, constrained to the surface size limits.
+ui::Size BootAnimation::getEffectiveResolution(const sp<IBinder>& displayToken,
+                                               const ui::Size& physicalResolution) const {
+    ui::DisplayState state;
+    ui::Size result;
+    if (SurfaceComposerClient::getDisplayState(displayToken, &state) != NO_ERROR) {
+        result = physicalResolution;
+    } else if (state.layerStackSpaceRect.width <= 0 || state.layerStackSpaceRect.height <= 0) {
+        result = physicalResolution;
+    } else {
+        result = state.layerStackSpaceRect;
+    }
+
+    result = limitSurfaceSize(result.width, result.height);
+
+    return result;
+}
+
 status_t BootAnimation::readyToRun() {
     ATRACE_CALL();
     mAssets.addDefaultAssets();
@@ -518,9 +544,11 @@ status_t BootAnimation::initDisplaysAndSurfaces() {
         if (error != NO_ERROR) {
             return error;
         }
-        ui::Size resolution = displayMode.resolution;
-        // Clamp each surface to max size
-        resolution = limitSurfaceSize(resolution.width, resolution.height);
+        display.physicalResolution = displayMode.resolution;
+        // Honor any WindowManager layer-stack-space override that's already in
+        // effect (otherwise SurfaceFlinger clips our surface to it).
+        ui::Size resolution = getEffectiveResolution(display.displayToken,
+                                                    display.physicalResolution);
         // Create the native surface
         display.surfaceControl =
                 session()->createSurface(String8("BootAnimation"), resolution.width,
@@ -669,7 +697,8 @@ bool BootAnimation::preloadAnimation() {
 }
 
 // Resolves the requested boot animation. persist.sys.bootanim.name wins
-// ("custom" or a [a-z0-9_]+ key mapping to bootanimation_<key>.zip); the
+// ("custom" or a [a-z0-9_]+ key mapping to bootanimation_<key>.zip, looked up in
+// /product/media first and then in the styles Settings has downloaded); the
 // legacy index in persist.sys.bootanimation_style is only used when no
 // name has been set yet.
 static std::string resolveBootAnimationPath() {
@@ -681,8 +710,13 @@ static std::string resolveBootAnimationPath() {
         if (name != "default" &&
             name.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") ==
                     std::string::npos) {
-            const std::string path = "/product/media/bootanimation_" + name + ".zip";
+            const std::string file = "bootanimation_" + name + ".zip";
+            const std::string path = "/product/media/" + file;
             if (access(path.c_str(), R_OK) == 0) return path;
+            // Not built in, so it can only be a downloaded style. Like "custom" it lives on
+            // /data, which findBootAnimationFileInternal() waits for, and the default
+            // animation is the fallback when the file is gone.
+            return std::string(BOOTANIM_DOWNLOAD_DIR_PATH) + "/" + file;
         }
         return BOOT_ANIMATION_FILES[0];
     }
@@ -1768,6 +1802,25 @@ void BootAnimation::processDisplayEvents() {
     // This will poll mDisplayEventReceiver and if there are new events it'll call
     // displayEventCallback synchronously.
     mLooper->pollOnce(0);
+    checkAndApplyResolutionOverride();
+}
+
+// SurfaceFlinger does not emit an event when WindowManager applies a
+// setDisplayProjection override (the only DisplayEventReceiver event types
+// cover VSYNC, hotplug, and mode change). Poll the current layer-stack-space
+// rect once per frame and resize our buffer to match if it has changed.
+void BootAnimation::checkAndApplyResolutionOverride() {
+    ATRACE_CALL();
+    for (auto& display : mDisplays) {
+        const ui::Size effective =
+                getEffectiveResolution(display.displayToken, display.physicalResolution);
+        if (effective.width == display.width && effective.height == display.height) {
+            continue;
+        }
+        SLOGV("Effective resolution changed to [%dx%d] from [%dx%d]",
+              effective.width, effective.height, display.width, display.height);
+        resizeSurface(effective.width, effective.height, display);
+    }
 }
 
 void BootAnimation::handleViewport(nsecs_t timestep, const Display& display) {

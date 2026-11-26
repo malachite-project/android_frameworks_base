@@ -15,75 +15,53 @@
  */
 package com.android.systemui.statusbar.pipeline.shared.ui.binder
 
+import android.content.Context
 import android.graphics.Canvas
-import android.graphics.Color
+import android.graphics.ColorFilter
 import android.graphics.LinearGradient
 import android.graphics.Paint
-import android.graphics.Path
+import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.drawable.Drawable
-import android.graphics.ColorFilter
-import android.graphics.PixelFormat
-import kotlin.math.cos
-import kotlin.math.sin
-import kotlin.math.PI
-import kotlin.math.sqrt
+import com.android.internal.R as internalR
 import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.min
+import kotlin.math.sin
 
 class ClockChipGradientDrawable(
-    startColor: Int = Color.TRANSPARENT,
-    endColor: Int = Color.TRANSPARENT,
+    private val startColor: Int,
+    private val endColor: Int,
     angleDeg: Float = 0f,
-    cornerRadiusPx: Float = 0f,
-    val maskTextMode: Boolean = false,
+    private val cornerRadiusPx: Float = CORNER_RADIUS_PILL,
 ) : Drawable() {
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val path = Path()
     private val rect = RectF()
+    private val angleDeg: Float = ((angleDeg % 360f) + 360f) % 360f
 
-    private var _startColor: Int = startColor
-    private var _endColor: Int = endColor
-
-    private var _angleDeg: Float = angleDeg.normalise()
-    private var _cornerRadius: Float = cornerRadiusPx
-
-    fun updateColors(startColor: Int, endColor: Int) {
-        _startColor = startColor
-        _endColor = endColor
-        rebuildShader()
-        invalidateSelf()
-    }
-
-    fun updateAngle(angleDeg: Float) {
-        _angleDeg = angleDeg.normalise()
-        rebuildShader()
-        invalidateSelf()
-    }
-
-    fun updateCornerRadius(px: Float) {
-        _cornerRadius = px
-        invalidateSelf()
-    }
-
-    override fun onBoundsChange(bounds: android.graphics.Rect) {
+    override fun onBoundsChange(bounds: Rect) {
         super.onBoundsChange(bounds)
         rect.set(bounds)
         rebuildShader()
     }
 
     override fun draw(canvas: Canvas) {
-        if (bounds.isEmpty) return
-        path.reset()
-        path.addRoundRect(rect, _cornerRadius, _cornerRadius, Path.Direction.CW)
-        canvas.drawPath(path, paint)
+        if (rect.isEmpty) return
+        val radius =
+            if (cornerRadiusPx < 0f) min(rect.width(), rect.height()) / 2f else cornerRadiusPx
+        canvas.drawRoundRect(rect, radius, radius, paint)
     }
 
     override fun setAlpha(alpha: Int) {
+        if (paint.alpha == alpha) return
         paint.alpha = alpha
         invalidateSelf()
     }
+
+    override fun getAlpha(): Int = paint.alpha
 
     override fun setColorFilter(colorFilter: ColorFilter?) {
         paint.colorFilter = colorFilter
@@ -94,26 +72,57 @@ class ClockChipGradientDrawable(
     override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
 
     private fun rebuildShader() {
-        val w = bounds.width().toFloat()
-        val h = bounds.height().toFloat()
-        if (w <= 0f || h <= 0f) return
+        val w = rect.width()
+        val h = rect.height()
+        if (w <= 0f || h <= 0f) {
+            paint.shader = null
+            return
+        }
 
-        val rad = _angleDeg * (PI / 180.0)
+        val rad = Math.toRadians(angleDeg.toDouble())
+        val dx = cos(rad).toFloat()
+        val dy = -sin(rad).toFloat()
 
-        val len = (abs(w * cos(rad)) + abs(h * sin(rad))).toFloat() / 2f
+        val half = (abs(w * dx) + abs(h * dy)) / 2f
 
-        val cx = w / 2f
-        val cy = h / 2f
-        val dx = sin(rad).toFloat()
-        val dy = -cos(rad).toFloat()
+        val cx = rect.centerX()
+        val cy = rect.centerY()
 
-        paint.shader = LinearGradient(
-            cx - dx * len, cy - dy * len,
-            cx + dx * len, cy + dy * len,
-            _startColor, _endColor,
-            Shader.TileMode.CLAMP
-        )
+        paint.shader =
+            LinearGradient(
+                cx - dx * half,
+                cy - dy * half,
+                cx + dx * half,
+                cy + dy * half,
+                startColor,
+                endColor,
+                Shader.TileMode.CLAMP,
+            )
     }
 
-    private fun Float.normalise(): Float = ((this % 360f) + 360f) % 360f
+    companion object {
+        const val CORNER_RADIUS_PILL = -1f
+
+        /** Follow the Material accent palette (primary -> secondary). */
+        const val COLOR_MODE_AUTO = 0
+        /** Use the colours picked in Settings. */
+        const val COLOR_MODE_CUSTOM = 1
+
+        @JvmStatic
+        fun accentColors(context: Context): Pair<Int, Int> =
+            context.getColor(internalR.color.materialColorPrimary) to
+                context.getColor(internalR.color.materialColorSecondary)
+
+        @JvmStatic
+        fun resolveColors(
+            colorMode: Int,
+            customStart: Int,
+            customEnd: Int,
+            accent: Pair<Int, Int>,
+        ): Pair<Int, Int> {
+            if (colorMode != COLOR_MODE_CUSTOM) return accent
+            return (if (customStart != 0) customStart else accent.first) to
+                (if (customEnd != 0) customEnd else accent.second)
+        }
+    }
 }

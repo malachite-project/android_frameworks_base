@@ -242,7 +242,8 @@ fun AppBackupRow(app: AppBackupInfo, selected: Boolean, index: Int, count: Int,
 
 @Composable
 fun SavedBackupCard(record: BackupRecord, enabled: Boolean, onRestore: () -> Unit,
-    onVerify: () -> Unit, onDelete: () -> Unit, modifier: Modifier = Modifier) {
+    onVerify: () -> Unit, onDelete: () -> Unit, onExport: () -> Unit,
+    modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val date = remember(record.timestampMs, context.resources.configuration) {
         val value = Date(record.timestampMs)
@@ -254,10 +255,12 @@ fun SavedBackupCard(record: BackupRecord, enabled: Boolean, onRestore: () -> Uni
         Column(Modifier.animateContentSize(MaterialTheme.motionScheme.defaultSpatialSpec()).padding(20.dp),
             Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                AppAvatar(record.packageName, record.label)
+                if (record.isSystemData) BackupEmblem(systemDataIcon(record.dataType), Modifier.size(48.dp))
+                else AppAvatar(record.packageName, record.label)
                 Column(Modifier.weight(1f), Arrangement.spacedBy(3.dp)) {
                     Text(record.label, style = MaterialTheme.typography.titleLargeEmphasized)
-                    Text(record.packageName, style = MaterialTheme.typography.bodySmall,
+                    Text(if (record.isSystemData) stringResource(R.string.system_data) else record.packageName,
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
@@ -269,7 +272,7 @@ fun SavedBackupCard(record: BackupRecord, enabled: Boolean, onRestore: () -> Uni
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 MetadataPill(backupSize(record.totalSize))
-                MetadataPill(stringResource(R.string.backup_version, record.versionName ?: ""))
+                if (!record.isSystemData) MetadataPill(stringResource(R.string.backup_version, record.versionName ?: ""))
                 if (record.isEncrypted) MetadataPill(stringResource(R.string.content_encrypted), Icons.Rounded.Lock)
                 if (record.state != BackupRecord.STATE_OK) MetadataPill(
                     stringResource(R.string.backup_incomplete), Icons.Rounded.Info)
@@ -292,6 +295,9 @@ fun SavedBackupCard(record: BackupRecord, enabled: Boolean, onRestore: () -> Uni
                     Icon(Icons.Rounded.VerifiedUser, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
                     Text(stringResource(R.string.verify))
+                }
+                if (!record.isEncrypted && !record.isSystemData) TextButton(onClick = onExport, enabled = enabled) {
+                    Text(stringResource(R.string.swift_export))
                 }
             }
         }
@@ -387,6 +393,7 @@ fun backupSize(bytes: Long): String = if (bytes < 0) stringResource(R.string.siz
 
 @Composable
 private fun backupContents(record: BackupRecord): String {
+    if (record.isSystemData) return stringResource(systemDataHelp(record.dataType))
     val parts = listOf(
         AppDataBackupRestoreManager.COMPONENT_APK to R.string.content_apk,
         AppDataBackupRestoreManager.COMPONENT_CE_DATA to R.string.content_app_data,
@@ -394,5 +401,6 @@ private fun backupContents(record: BackupRecord): String {
         AppDataBackupRestoreManager.COMPONENT_EXTERNAL to R.string.content_external,
     ).filter { (flag, _) -> record.components and flag != 0 }.map { (_, text) -> stringResource(text) }
     return stringResource(R.string.content_includes,
-        (parts + stringResource(R.string.content_permissions)).joinToString(" · "))
+        (if (record.id.startsWith("swift_")) parts else
+            parts + stringResource(R.string.content_permissions)).joinToString(" · "))
 }

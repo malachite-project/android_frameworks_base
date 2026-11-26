@@ -13,6 +13,8 @@ import android.app.appbackup.BackupResult
 import android.app.appbackup.IBackupProgressCallback
 import android.app.appbackup.IRestoreProgressCallback
 import android.content.Context
+import android.net.Uri
+import android.os.ParcelFileDescriptor
 import android.os.UserHandle
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
@@ -185,7 +187,8 @@ class BackupViewModel(application: Application) : AndroidViewModel(application) 
 
     fun restore(record: BackupRecord, passphrase: String?) {
         if (state.value.busy) return
-        val id = begin(R.string.progress_restore_title, R.string.progress_preparing, cancellable = true)
+        val id = begin(if (record.isSystemData) R.string.system_restore_title else R.string.progress_restore_title,
+            R.string.progress_preparing, cancellable = true)
         val callback = object : IRestoreProgressCallback.Stub() {
             private var packageResult: BackupResult? = null
 
@@ -195,7 +198,8 @@ class BackupViewModel(application: Application) : AndroidViewModel(application) 
 
             override fun onPackageRestoreStarted(token: String, pkg: String, idx: Int, total: Int) =
                 updateOperation(id) {
-                    it.copy(detail = text(R.string.progress_installing, record.label))
+                    it.copy(detail = text(if (record.isSystemData) R.string.progress_restoring_data
+                        else R.string.progress_installing, record.label))
                 }
 
             override fun onPackageDataRestoring(token: String, pkg: String) = updateOperation(id) {
@@ -208,8 +212,9 @@ class BackupViewModel(application: Application) : AndroidViewModel(application) 
             }
 
             override fun onRestoreFinished(token: String, result: BackupResult) {
-                complete(id, packageResult?.takeUnless { it.isSuccess } ?: result,
-                    R.string.restore_complete, reloadApps = true)
+                complete(id, packageResult ?: result,
+                    if (record.isSystemData) R.string.system_restore_complete else R.string.restore_complete,
+                    reloadApps = !record.isSystemData)
             }
 
             override fun onRestoreCancelled(token: String) {
@@ -226,6 +231,91 @@ class BackupViewModel(application: Application) : AndroidViewModel(application) 
             } catch (e: Exception) {
                 fail(id, e)
             }
+        }
+    }
+
+    fun backupSystemData(type: Int, options: BackupOptions) {
+        if (state.value.busy || type !in systemDataTypes || options.keepVersions < 0) return
+        val id = begin(R.string.system_backup_title, R.string.progress_preparing, cancellable = true)
+        val callback = object : IBackupProgressCallback.Stub() {
+            override fun onBackupStarted(token: String, total: Int) = operationStarted(id, token) {
+                it.copy(detail = text(systemDataLabel(type)))
+            }
+            override fun onPackageBackupStarted(token: String, pkg: String, idx: Int, total: Int) = Unit
+            override fun onPackageBackupFinished(token: String, pkg: String, result: BackupResult) = Unit
+            override fun onBackupFinished(token: String, result: BackupResult) {
+                complete(id, result, R.string.backup_complete, reloadBackups = true)
+            }
+            override fun onBackupCancelled(token: String) {
+                complete(id, null, R.string.backup_cancelled, reloadBackups = true)
+            }
+        }
+        viewModelScope.launch {
+            try {
+                val token = withContext(Dispatchers.IO) {
+                    manager.backupSystemData(type, options.passphrase, options.keepVersions, callback)
+                }
+                acceptToken(id, token)
+            } catch (e: Exception) { fail(id, e) }
+        }
+    }
+
+    fun importSwiftSystemData(type: Int, uri: Uri) {
+        if (state.value.busy || type !in systemDataTypes) return
+        val id = begin(R.string.swift_import, R.string.progress_preparing)
+        viewModelScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    SwiftBackupDocuments.withReadPipes(getApplication<Application>().contentResolver, listOf(uri)) { descriptors ->
+                        manager.importSwiftSystemData(type, descriptors.single())
+                    }
+                }
+                complete(id, result, R.string.swift_system_import_complete, reloadBackups = true)
+            } catch (e: Exception) { fail(id, e) }
+        }
+    }
+
+    fun importSwift(tree: Uri) {
+        if (state.value.busy) return
+        val id = begin(R.string.swift_import, R.string.progress_preparing)
+        viewModelScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    val resolver = getApplication<Application>().contentResolver
+                    val files = SwiftBackupDocuments.files(resolver, tree)
+                    if (files.isEmpty() || files.size > 10) {
+                        return@withContext BackupResult.failure(BackupResult.ERROR_IO,
+                            text(R.string.swift_select_version))
+                    }
+                    SwiftBackupDocuments.withReadPipes(resolver, files.map { it.second }) { descriptors ->
+                        manager.importSwiftBackup(files.map { it.first }.toTypedArray(), descriptors)
+                    }
+                }
+                complete(id, result, R.string.swift_import_complete, reloadBackups = true)
+            } catch (e: Exception) { fail(id, e) }
+        }
+    }
+
+    fun exportSwift(record: BackupRecord, tree: Uri) {
+        if (state.value.busy || record.isEncrypted || record.isSystemData) return
+        val id = begin(R.string.swift_export, R.string.progress_preparing)
+        viewModelScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    val app = getApplication<Application>()
+                    val archive = File.createTempFile("swift-export-", ".zip", app.cacheDir)
+                    try {
+                        val result = ParcelFileDescriptor.open(archive,
+                            ParcelFileDescriptor.MODE_READ_WRITE or ParcelFileDescriptor.MODE_TRUNCATE).use {
+                            manager.exportSwiftBackup(record.id, it)
+                        }
+                        if (result.isSuccess) SwiftBackupDocuments.export(app.contentResolver,
+                            tree, record.packageName, archive)
+                        result
+                    } finally { archive.delete() }
+                }
+                complete(id, result, R.string.swift_export_complete)
+            } catch (e: Exception) { fail(id, e) }
         }
     }
 
@@ -327,7 +417,8 @@ class BackupViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             if (id != generation || !state.value.busy) return@launch
             val message = when {
-                result == null || result.isSuccess -> text(success)
+                result == null -> text(success)
+                result.isSuccess -> result.message?.takeIf { it != "OK" && it.isNotBlank() } ?: text(success)
                 state.value.operation?.cancelling == true || result.errorCode == BackupResult.ERROR_CANCELLED ->
                     text(R.string.operation_cancelled)
                 result.status == BackupResult.STATUS_PARTIAL ->
@@ -350,7 +441,8 @@ class BackupViewModel(application: Application) : AndroidViewModel(application) 
     private fun fail(id: Int, e: Exception) {
         if (e is CancellationException) throw e
         Log.e(TAG, "Backup operation failed", e)
-        finish(id, text(R.string.operation_failed))
+        finish(id, if (e is java.io.IOException && !e.message.isNullOrBlank())
+            text(R.string.operation_error, e.message!!) else text(R.string.operation_failed))
     }
 
     private fun text(id: Int, vararg args: Any): String = getApplication<Application>().getString(id, *args)

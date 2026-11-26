@@ -21,6 +21,7 @@ import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
 import android.annotation.SystemService;
 import android.content.Context;
+import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.util.Log;
@@ -45,6 +46,33 @@ public class AppDataBackupRestoreManager {
     public static final int COMPONENT_ALL =
             COMPONENT_APK | COMPONENT_CE_DATA | COMPONENT_DE_DATA | COMPONENT_EXTERNAL;
 
+    public static final int DATA_TYPE_APP = 0;
+    public static final int DATA_TYPE_CALL_LOGS = 1;
+    public static final int DATA_TYPE_MESSAGES = 2;
+    public static final int DATA_TYPE_WIFI = 3;
+
+    @RequiresPermission(android.Manifest.permission.APP_DATA_BACKUP)
+    @NonNull
+    public String backupSystemData(int dataType, @Nullable String passphrase,
+            int keepVersions, @Nullable IBackupProgressCallback callback) {
+        try {
+            return mService.backupSystemData(dataType, mUserId, passphrase, keepVersions, callback);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    @RequiresPermission(android.Manifest.permission.APP_DATA_BACKUP)
+    @NonNull
+    public BackupResult importSwiftSystemData(int dataType,
+            @NonNull ParcelFileDescriptor source) {
+        try {
+            return mService.importSwiftSystemData(dataType, source);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
     private final IAppDataBackupService mService;
     private final int mUserId;
 
@@ -56,6 +84,30 @@ public class AppDataBackupRestoreManager {
     private static IAppDataBackupService getService() {
         return IAppDataBackupService.Stub.asInterface(
                 ServiceManager.getService(SERVICE_NAME));
+    }
+
+    /** Imports a single Swift app/version folder into the caller's backup library. */
+    @RequiresPermission(android.Manifest.permission.APP_DATA_BACKUP)
+    @NonNull
+    public BackupResult importSwiftBackup(@NonNull String[] names,
+            @NonNull List<ParcelFileDescriptor> files) {
+        try {
+            return mService.importSwiftBackup(names, files);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /** Exports an unencrypted native backup as a ZIP containing Swift guest backup files. */
+    @RequiresPermission(android.Manifest.permission.APP_DATA_BACKUP)
+    @NonNull
+    public BackupResult exportSwiftBackup(@NonNull String backupId,
+            @NonNull ParcelFileDescriptor destination) {
+        try {
+            return mService.exportSwiftBackup(backupId, destination);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
     }
 
     @RequiresPermission(android.Manifest.permission.APP_DATA_BACKUP)

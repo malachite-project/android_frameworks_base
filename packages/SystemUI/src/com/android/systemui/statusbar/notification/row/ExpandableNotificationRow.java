@@ -97,6 +97,7 @@ import com.android.systemui.plugins.PluginListener;
 import com.android.systemui.plugins.statusbar.NotificationMenuRowPlugin;
 import com.android.systemui.plugins.statusbar.NotificationMenuRowPlugin.MenuItem;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
+import com.android.systemui.qs.shared.style.LiquidGlass;
 import com.android.systemui.res.R;
 import com.android.systemui.scene.shared.flag.SceneContainerFlag;
 import com.android.systemui.statusbar.NotificationLockscreenUserManager.RedactionType;
@@ -983,6 +984,7 @@ public class ExpandableNotificationRow extends ActivatableNotificationView
         int intrinsicBefore = getIntrinsicHeight();
         mIsHeadsUp = isHeadsUp;
         mPrivateLayout.setHeadsUp(isHeadsUp);
+        updateHeadsUpGlass();
         if (mIsSummaryWithChildren) {
             // The overflow might change since we allow more lines as HUN.
             mChildrenContainer.updateGroupOverflow();
@@ -1327,6 +1329,7 @@ public class ExpandableNotificationRow extends ActivatableNotificationView
         int intrinsicHeight = getIntrinsicHeight();
         boolean wasAboveShelf = isAboveShelf();
         mPinnedStatus = pinnedStatus;
+        updateHeadsUpGlass();
         if (intrinsicHeight != getIntrinsicHeight()) {
             notifyHeightChanged(/* needsAnimation= */ false, "ENR.setPinnedStatus");
         }
@@ -1355,6 +1358,16 @@ public class ExpandableNotificationRow extends ActivatableNotificationView
     @Override
     public boolean isPinned() {
         return mPinnedStatus.isPinned();
+    }
+
+    /**
+     * Only a pinned heads-up floats over the app and needs glass of its own. In the shade it is
+     * one of the cards drawn on the shade's glass, like the children of an opened group.
+     */
+    private void updateHeadsUpGlass() {
+        if (mBackgroundNormal != null) {
+            mBackgroundNormal.setHeadsUpGlass(mIsHeadsUp && isPinned());
+        }
     }
 
     @Override
@@ -3172,6 +3185,22 @@ public class ExpandableNotificationRow extends ActivatableNotificationView
     }
 
     @Override
+    public void setBlurRegionFade(float fade) {
+        super.setBlurRegionFade(fade);
+        if (mIsSummaryWithChildren) {
+            mChildrenContainer.setBlurRegionFade(fade);
+        }
+    }
+
+    @Override
+    public void setBlurRegionSuppressed(boolean suppressed) {
+        super.setBlurRegionSuppressed(suppressed);
+        if (mIsSummaryWithChildren) {
+            mChildrenContainer.setBlurRegionSuppressed(suppressed);
+        }
+    }
+
+    @Override
     public int getHeightWithoutLockscreenConstraints() {
         mIgnoreLockscreenConstraints = true;
         final int height = getIntrinsicHeight();
@@ -4060,7 +4089,9 @@ public class ExpandableNotificationRow extends ActivatableNotificationView
             mShowNoBackground = true;
             mChildrenContainer.updateHeaderForExpansion(mShowNoBackground);
         } else if (mIsSummaryWithChildren) {
-            mShowNoBackground = !mShowGroupBackgroundWhenExpanded && isGroupExpanded()
+            // Glass keeps the group's own background while it is expanded, like iOS stacks.
+            mShowNoBackground = !LiquidGlass.isOnShade(mContext)
+                    && !mShowGroupBackgroundWhenExpanded && isGroupExpanded()
                     && !isGroupExpansionChanging() && !isUserSwipingToExpandRow();
             mChildrenContainer.updateHeaderForExpansion(mShowNoBackground);
             List<ExpandableNotificationRow> children = mChildrenContainer.getAttachedChildren();

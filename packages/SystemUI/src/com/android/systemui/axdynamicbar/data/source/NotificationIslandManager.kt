@@ -24,6 +24,7 @@ import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.util.ScrimUtils
 import java.util.Objects
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -34,6 +35,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -152,6 +154,7 @@ constructor(
     private var stopwatchDismissedKey: String? = null
     private val dismissedPromotedKeys = mutableSetOf<String>()
     private val dismissedSportsKeys = mutableSetOf<String>()
+    private var dismissedNowPlayingTitle: String? = null
     private var alarmNotificationKey: String? = null
 
     val notificationFlow = MutableSharedFlow<IslandEvent.Notification>(
@@ -165,7 +168,18 @@ constructor(
 
     var activeMediaPackageProvider: (() -> String?)? = null
 
-    private val seenSignatures = mutableMapOf<String, Long>()
+    /**
+     * Last content signature per posted key. Concurrent because stopListening() clears it from
+     * another thread.
+     */
+    private val seenSignatures: MutableMap<String, Long> = ConcurrentHashMap()
+
+    /**
+     * Keys that may still be shown. Cleared on removal and on dismiss so a late coalesce cannot
+     * put the notification back (and pin its sbn/bitmaps). A later post adds the key again.
+     */
+    private val activeNotificationKeys: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    private val notificationLock = Any()
 
     var onTimerEvent: ((IslandEvent.Timer) -> Unit)? = null
     var onAlarmEvent: ((IslandEvent.Alarm) -> Unit)? = null
@@ -232,16 +246,20 @@ constructor(
                     _sportsEvents.value.filter { it.key != sbn.key }
 
                 if (_nowPlayingEvent.value?.key == sbn.key) {
+                    dismissedNowPlayingTitle = null
                     _nowPlayingEvent.value = null
                 }
 
-                _notificationEvents.value =
-                    _notificationEvents.value.filter { it.sbn.key != sbn.key }
+                synchronized(notificationLock) {
+                    activeNotificationKeys.remove(sbn.key)
+                    _notificationEvents.value =
+                        _notificationEvents.value.filter { it.sbn.key != sbn.key }
+                }
 
                 notificationRemovedFlow.tryEmit(sbn.key)
             }
 
-            override fun onNotificationPosted(sbn: StatusBarNotification) {
+            override fun onNotificationPosted(sbn: StatusBarNotification, isSilent: Boolean) {
                 if (!listening) return
                 val pkg = sbn.packageName ?: return
                 val extras = sbn.notification?.extras ?: return
@@ -382,6 +400,7 @@ constructor(
                                 startTimeMs = startTime,
                                 actions = notifActions,
                                 pausedDurationMs = 0L,
+                                contentIntent = sbn.notification?.contentIntent,
                             )
                         )
                         return
@@ -406,6 +425,7 @@ constructor(
                             appName = title.ifEmpty { existing.appName },
                             state = RecordingState.SAVED,
                             actions = notifActions,
+                            contentIntent = sbn.notification?.contentIntent,
                         )
                     )
                     return
@@ -459,6 +479,17 @@ constructor(
                 }
                 if (sbn.isOngoing) return
                 if ("notification" in disabledTypes) return
+                if (isSilent) {
+                    seenSignatures.remove(sbn.key)
+                    synchronized(notificationLock) {
+                        if (activeNotificationKeys.remove(sbn.key)) {
+                            _notificationEvents.update { list ->
+                                list.filter { it.sbn.key != sbn.key }
+                            }
+                        }
+                    }
+                    return
+                }
                 val category = sbn.notification?.category
                 if (category == Notification.CATEGORY_TRANSPORT) return
                 if (category == Notification.CATEGORY_SERVICE && !hasProgress) return
@@ -619,6 +650,7 @@ constructor(
                         groupKey = groupKey,
                         notificationImage = notificationImage,
                     )
+                activeNotificationKeys.add(sbn.key)
                 notificationFlow.tryEmit(event)
                 onNotificationPosted?.invoke(event)
             }
@@ -655,6 +687,7 @@ constructor(
         listening = false
         ScrimUtils.get().removeListener(scrimListener)
         seenSignatures.clear()
+        activeNotificationKeys.clear()
         timerJob?.cancel()
         timerJob = null
         timerNotificationKey = null
@@ -664,6 +697,7 @@ constructor(
         _stopwatchEvent.value = null
         dismissedPromotedKeys.clear()
         dismissedSportsKeys.clear()
+        dismissedNowPlayingTitle = null
         _alarmEvent.value = null
         _callEvents.value = emptyList()
         _notificationEvents.value = emptyList()
@@ -687,15 +721,21 @@ constructor(
     }
 
     fun dismissNotification(event: IslandEvent.Notification) {
-        _notificationEvents.value = _notificationEvents.value.filter { it.id != event.id }
+        synchronized(notificationLock) {
+            activeNotificationKeys.remove(event.sbn.key)
+            _notificationEvents.value = _notificationEvents.value.filter { it.id != event.id }
+        }
     }
 
     fun coalesceNotification(event: IslandEvent.Notification) {
         if (!listening) return
-        val current = _notificationEvents.value.toMutableList()
-        current.removeAll { it.id == event.id }
-        current.add(0, event)
-        _notificationEvents.value = current
+        synchronized(notificationLock) {
+            if (event.sbn.key !in activeNotificationKeys) return
+            val current = _notificationEvents.value.toMutableList()
+            current.removeAll { it.id == event.id }
+            current.add(0, event)
+            _notificationEvents.value = current
+        }
     }
 
     fun dismissAudioRecording() {
@@ -794,6 +834,7 @@ constructor(
                 appIcon = icon,
                 isPaused = isPaused,
                 actions = actions,
+                contentIntent = sbn.notification?.contentIntent,
             )
         timerNotificationKey = sbn.key
         lastTimer = event
@@ -856,6 +897,7 @@ constructor(
                 isRunning = isRunning,
                 appIcon = icon,
                 actions = actions,
+                contentIntent = sbn.notification?.contentIntent,
             )
         stopwatchNotificationKey = sbn.key
         if (sbn.key != stopwatchDismissedKey) _stopwatchEvent.value = event
@@ -913,6 +955,7 @@ constructor(
                 triggerTimeMs = sbn.notification.`when`,
                 isRinging = isRinging,
                 appIcon = icon,
+                contentIntent = sbn.notification?.contentIntent,
             )
         alarmNotificationKey = sbn.key
         _alarmEvent.value = event
@@ -1163,12 +1206,20 @@ constructor(
         _sportsEvents.value = _sportsEvents.value.filter { e -> matching.none { it.key == e.key } }
     }
 
+    /** Hides the current song until a different one is recognized. */
     fun clearNowPlaying() {
+        dismissedNowPlayingTitle = _nowPlayingEvent.value?.sbn?.notification?.extras
+            ?.getCharSequence("android.title")?.toString()
         _nowPlayingEvent.value = null
     }
 
     private fun handleNowPlaying(sbn: StatusBarNotification, extras: Bundle) {
         val title = extras.getCharSequence("android.title")?.toString() ?: return
+        if (title == dismissedNowPlayingTitle) {
+            _nowPlayingEvent.value = null
+            return
+        }
+        dismissedNowPlayingTitle = null
         val byMatch = Regex("""(.+?)\s+by\s+(.+)""", RegexOption.IGNORE_CASE).find(title)
         val dashParts = if (byMatch == null) title.split(" - ", " – ", limit = 2) else null
         val songTitle: String

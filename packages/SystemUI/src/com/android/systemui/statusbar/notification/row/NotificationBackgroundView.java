@@ -21,10 +21,13 @@ import static com.android.systemui.util.ColorUtilKt.hexColorString;
 
 import android.content.Context;
 import android.content.res.ColorStateList;
+import android.content.res.Configuration;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.Path;
 import android.graphics.PorterDuff;
 import android.graphics.Rect;
+import android.graphics.RectF;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.LayerDrawable;
@@ -41,6 +44,7 @@ import com.android.internal.graphics.drawable.BackgroundBlurDrawable;
 import com.android.internal.util.ContrastColorUtil;
 import com.android.systemui.Dumpable;
 import com.android.systemui.common.shared.colors.SurfaceEffectColors;
+import com.android.systemui.qs.shared.style.LiquidGlass;
 import com.android.systemui.res.R;
 import com.android.systemui.statusbar.notification.shared.NotificationAddXOnHoverToDismiss;
 import com.android.systemui.util.Assert;
@@ -80,8 +84,14 @@ public class NotificationBackgroundView extends View implements Dumpable,
     private final int convexR = 9;
     private final int concaveR = 22;
     private BackgroundBlurDrawable mBackgroundBlurDrawable;
-    @VisibleForTesting
-    protected View.OnAttachStateChangeListener mOnAttachStateChangeListener;
+    private boolean mBlurBackgroundEnabled;
+    // When true, the blur region is forced to alpha 0 (dropped from the aggregator) but kept around.
+    private boolean mBlurRegionSuppressed;
+    // The alpha of the whole stack, which blur regions ignore as they are not drawn with the view.
+    private float mBlurRegionFade = 1f;
+    private boolean mBlurHiddenInShelf;
+    private int mBlurViewAlpha = 255;
+    private final Rect mBlurBounds = new Rect();
 
     // True only if the dismiss button is visible.
     private boolean mDrawDismissButtonCutout = false;
@@ -139,9 +149,10 @@ public class NotificationBackgroundView extends View implements Dumpable,
 
             if (!NotificationAddXOnHoverToDismiss.isEnabled()) {
                 if (mBackgroundBlurDrawable != null) {
-                    draw(canvas, mBackgroundBlurDrawable);
+                    drawBlur(canvas, null);
                 } else {
                     draw(canvas, mBackground);
+                    drawGlassRim(canvas, mBackground != null ? mBackground.getBounds() : null);
                 }
                 canvas.restore();
                 return;
@@ -157,11 +168,12 @@ public class NotificationBackgroundView extends View implements Dumpable,
                 canvas.clipPath(calculateDismissButtonCutoutPath(backgroundBounds));
             }
             if (mBackgroundBlurDrawable != null) {
-                mBackgroundBlurDrawable.setBounds(backgroundBounds);
-                mBackgroundBlurDrawable.draw(canvas);
+                drawBlur(canvas, backgroundBounds);
+                drawGlassRim(canvas, mBlurBounds);
             } else if (mBackground != null) {
                 mBackground.setBounds(backgroundBounds);
                 mBackground.draw(canvas);
+                drawGlassRim(canvas, backgroundBounds);
             }
 
             canvas.restore();
@@ -195,9 +207,122 @@ public class NotificationBackgroundView extends View implements Dumpable,
         return path;
     }
 
+    private final RectF mGlassBounds = new RectF();
+
+    /** Strokes the Liquid Glass rim around a card. Not drawn on a card with a ColorOS material. */
+    private void drawGlassRim(Canvas canvas, @Nullable Rect bounds) {
+        if (bounds == null || bounds.isEmpty() || !LiquidGlass.isOnShade(getContext())
+                || (mCosMaterial != 0 && mBackgroundBlurDrawable != null)) {
+            return;
+        }
+        mGlassBounds.set(bounds);
+        LiquidGlass.drawRim(canvas, mGlassBounds, mCornerRadii,
+                getResources().getDisplayMetrics().density);
+    }
+
+    /**
+     * The fill of a card on Liquid Glass: a faint frost instead of the card color. Only the
+     * plain card color is swapped. Tinted cards (a conversation, a call) keep their own, and the
+     * shade colors are never touched, those stay with ShadeColors and shade_color_style.
+     */
+    private int surfaceFor(int tintColor) {
+        if (tintColor != mNormalColor || !LiquidGlass.isOnShade(getContext())) return tintColor;
+        // The ColorOS material frosts the card itself, so the fill stays clear. The light card
+        // material is too bright for the dark text, it gets a light frost under it.
+        if (mCosMaterial != 0) {
+            return mCosMaterial == BackgroundBlurDrawable.MATERIAL_CARD_LIGHT
+                    ? COS_LIGHT_CARD_FROST : Color.TRANSPARENT;
+        }
+        // A pinned heads-up floats over the app, so it gets a lighter glass of its own.
+        if (mHeadsUpGlass) return LiquidGlass.headsUpSurface();
+        return LiquidGlass.viewSurface();
+    }
+
+    private boolean mHeadsUpGlass;
+
+    private int mCosMaterial;
+
+    /** The fill under the light ColorOS card material, FooterView draws its buttons the same. */
+    private static final int COS_LIGHT_CARD_FROST = 0xA6F2F2F2;
+
+    /** With Liquid Glass, a heavier frost than the stock card, as iOS blurs notifications. */
+    private static final float COS_CARD_BLUR_DP = 36f;
+
+    /** A heads-up sits over the app, so its blur is lighter than that of a card in the shade. */
+    private static final float COS_HEADS_UP_BLUR_DP = 14f;
+
+    /**
+     * Draws the card as a heads-up floating over the app, which has no shade glass behind it:
+     * its own fill on Liquid Glass, and the ColorOS heads-up material under the ColorOS style.
+     */
+    public void setHeadsUpGlass(boolean headsUp) {
+        if (mHeadsUpGlass == headsUp) return;
+        mHeadsUpGlass = headsUp;
+        if (mBackground != null) {
+            setTint(mTintColor != 0 ? mTintColor : mNormalColor);
+        }
+    }
+
+    /**
+     * Picks the ColorOS material for the blur region, or none: the card material (dark 7, light 8),
+     * or the heads-up material (dark 9, light 10) while the card is a pinned heads-up.
+     */
+    private void updateCosMaterial() {
+        mCosMaterial = 0;
+        if (mBackgroundBlurDrawable == null) return;
+        if (LiquidGlass.isCosStyle(getContext())) {
+            final boolean dark = (getResources().getConfiguration().uiMode
+                    & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+            if (mHeadsUpGlass) {
+                mCosMaterial = dark ? BackgroundBlurDrawable.MATERIAL_HEADS_UP_DARK
+                        : BackgroundBlurDrawable.MATERIAL_HEADS_UP_LIGHT;
+            } else {
+                mCosMaterial = dark ? BackgroundBlurDrawable.MATERIAL_CARD_DARK
+                        : BackgroundBlurDrawable.MATERIAL_CARD_LIGHT;
+            }
+        }
+        mBackgroundBlurDrawable.setMaterial(mCosMaterial);
+        final float density = getResources().getDisplayMetrics().density;
+        final int blurRadius;
+        if (mCosMaterial != 0 && mHeadsUpGlass) {
+            blurRadius = Math.round(COS_HEADS_UP_BLUR_DP * density);
+        } else if (mCosMaterial != 0 && LiquidGlass.isOnShade(getContext())) {
+            blurRadius = Math.round(COS_CARD_BLUR_DP * density);
+        } else {
+            blurRadius = getResources().getDimensionPixelSize(
+                    R.dimen.notification_background_blur_radius);
+        }
+        mBackgroundBlurDrawable.setBlurRadius(blurRadius);
+    }
+
+    private void drawBlur(Canvas canvas, @Nullable Rect backgroundBounds) {
+        final Rect bounds = mBlurBounds;
+        if (backgroundBounds != null) {
+            bounds.set(backgroundBounds);
+        } else {
+            computeBackgroundBounds(bounds);
+        }
+        if (!mExpandAnimationRunning) {
+            bounds.top = Math.max(bounds.top, Math.max(mClipTopAmount, mTopOverlap));
+            bounds.bottom = Math.min(bounds.bottom,
+                    getActualHeight() - Math.max(mClipBottomAmount, mBottomOverlap));
+        }
+        if (bounds.isEmpty()) {
+            return;
+        }
+        mBackgroundBlurDrawable.setBounds(bounds);
+        mBackgroundBlurDrawable.draw(canvas);
+    }
+
     private Rect calculateBackgroundBounds() {
         NotificationAddXOnHoverToDismiss.isUnexpectedlyInLegacyMode();
 
+        final Rect bounds = new Rect();
+        computeBackgroundBounds(bounds);
+        return bounds;
+    }
+
+    private void computeBackgroundBounds(Rect out) {
         int top = 0;
         int bottom = getActualHeight();
         if (mBottomIsRounded
@@ -218,7 +343,7 @@ public class NotificationBackgroundView extends View implements Dumpable,
             right = (int) (left + actualWidth);
         }
 
-        return new Rect(left, top, right, bottom);
+        out.set(left, top, right, bottom);
     }
 
     /**
@@ -346,49 +471,106 @@ public class NotificationBackgroundView extends View implements Dumpable,
         }
         Assert.isMainThread();
 
-        if (enabled && mBackgroundBlurDrawable == null) {
-            if (mOnAttachStateChangeListener != null) {
-                removeOnAttachStateChangeListener(mOnAttachStateChangeListener);
-            }
-            mOnAttachStateChangeListener =
-                    new OnAttachStateChangeListener() {
-                        @Override
-                        public void onViewAttachedToWindow(View view) {
-                            if (mBackgroundBlurDrawable == null) {
-                                mBackgroundBlurDrawable =
-                                        view.getViewRootImpl().createBackgroundBlurDrawable();
-                                mBackgroundBlurDrawable.setBlurRadius(
-                                        getResources().getDimensionPixelSize(
-                                                R.dimen.notification_background_blur_radius));
-                                mBackgroundBlurDrawable.setXfermode(null);
-                                mBackgroundBlurDrawable.setCallback(
-                                        NotificationBackgroundView.this);
-                                mBackgroundBlurDrawable.setColor(mNormalColor);
-
-                                updateBackgroundRadii();
-                                invalidate();
-                            }
-                            NotificationBackgroundView.this.removeOnAttachStateChangeListener(this);
-                            mOnAttachStateChangeListener = null;
-                        }
-
-                        @Override
-                        public void onViewDetachedFromWindow(View view) {}
-                    };
-            addOnAttachStateChangeListener(mOnAttachStateChangeListener);
-
+        if (mBlurBackgroundEnabled == enabled) {
+            return;
+        }
+        mBlurBackgroundEnabled = enabled;
+        if (enabled) {
             if (isAttachedToWindow()) {
-                mOnAttachStateChangeListener.onViewAttachedToWindow(this);
+                createBlurDrawable();
             }
-        } else if (!enabled) {
-            if (mOnAttachStateChangeListener != null) {
-                removeOnAttachStateChangeListener(mOnAttachStateChangeListener);
-                mOnAttachStateChangeListener = null;
-            }
-            if (mBackgroundBlurDrawable != null) {
-                mBackgroundBlurDrawable.setCallback(null);
-            }
-            mBackgroundBlurDrawable = null;
+            // Otherwise created in onAttachedToWindow.
+        } else {
+            releaseBlurDrawable();
+        }
+    }
+
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        if (mBlurBackgroundEnabled) {
+            createBlurDrawable();
+        }
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        releaseBlurDrawable();
+        super.onDetachedFromWindow();
+    }
+
+    @Override
+    public void onVisibilityAggregated(boolean isVisible) {
+        super.onVisibilityAggregated(isVisible);
+        if (mBackgroundBlurDrawable != null && mBackgroundBlurDrawable.isVisible() != isVisible) {
+            mBackgroundBlurDrawable.setVisible(isVisible, false);
+        }
+    }
+
+    private void createBlurDrawable() {
+        if (mBackgroundBlurDrawable != null || getViewRootImpl() == null) {
+            return;
+        }
+        mBackgroundBlurDrawable = getViewRootImpl().createBackgroundBlurDrawable();
+        mBackgroundBlurDrawable.setBlurRadius(
+                getResources().getDimensionPixelSize(R.dimen.notification_background_blur_radius));
+        mBackgroundBlurDrawable.setXfermode(null);
+        mBackgroundBlurDrawable.setCallback(this);
+        updateCosMaterial();
+        mBackgroundBlurDrawable.setColor(
+                surfaceFor(mTintColor != 0 ? mTintColor : mNormalColor));
+        if (!isAggregatedVisible()) {
+            mBackgroundBlurDrawable.setVisible(false, false);
+        }
+        updateBlurAlpha();
+        updateBackgroundRadii();
+        invalidate();
+    }
+
+    private void releaseBlurDrawable() {
+        if (mBackgroundBlurDrawable == null) {
+            return;
+        }
+        mBackgroundBlurDrawable.setVisible(false, false);
+        mBackgroundBlurDrawable.setCallback(null);
+        mBackgroundBlurDrawable = null;
+        // The COS material is drawn by the window blur: a card that has lost its blur (moved
+        // from the lock screen into the shade) needs its own fill again.
+        if (mBackground != null) {
+            setTint(mTintColor != 0 ? mTintColor : mNormalColor);
+        }
+        invalidate();
+    }
+
+    private void updateBlurAlpha() {
+        if (mBackgroundBlurDrawable == null) {
+            return;
+        }
+        final int alpha = mBlurRegionSuppressed || mBlurHiddenInShelf
+                ? 0 : Math.round(mDrawableAlpha * mBlurViewAlpha / 255f * mBlurRegionFade);
+        mBackgroundBlurDrawable.setAlpha(alpha);
+    }
+
+    public void setBlurHiddenInShelf(boolean hidden) {
+        if (mBlurHiddenInShelf == hidden) {
+            return;
+        }
+        mBlurHiddenInShelf = hidden;
+        if (mBackgroundBlurDrawable != null) {
+            updateBlurAlpha();
+            invalidate();
+        }
+    }
+
+    public void setBlurViewAlpha(float alpha) {
+        final int blurViewAlpha = Math.round(Math.max(0f, Math.min(1f, alpha)) * 255);
+        if (mBlurViewAlpha == blurViewAlpha) {
+            return;
+        }
+        mBlurViewAlpha = blurViewAlpha;
+        if (mBackgroundBlurDrawable != null && !mExpandAnimationRunning) {
+            updateBlurAlpha();
+            invalidate();
         }
     }
 
@@ -401,15 +583,17 @@ public class NotificationBackgroundView extends View implements Dumpable,
     }
 
     public void setTint(int tintColor) {
+        updateCosMaterial();
         Drawable baseLayer = getBaseBackgroundLayer();
+        final int surface = surfaceFor(tintColor);
         if (mIsBlurSupported) {
-            ((GradientDrawable) baseLayer.mutate()).setColor(tintColor);
+            ((GradientDrawable) baseLayer.mutate()).setColor(surface);
         } else {
             baseLayer.mutate().setTintMode(PorterDuff.Mode.SRC_ATOP);
-            baseLayer.setTint(tintColor);
+            baseLayer.setTint(surface);
         }
         if (mBackgroundBlurDrawable != null) {
-            mBackgroundBlurDrawable.setColor(tintColor);
+            mBackgroundBlurDrawable.setColor(surface);
         }
         mTintColor = tintColor;
         setStatefulColors();
@@ -507,8 +691,30 @@ public class NotificationBackgroundView extends View implements Dumpable,
             return;
         }
         mBackground.setAlpha(drawableAlpha);
+        updateBlurAlpha();
+    }
+
+    /** Fades the blur region with the stack, as it ignores the alpha of the views above. */
+    public void setBlurRegionFade(float fade) {
+        if (mBlurRegionFade == fade) {
+            return;
+        }
+        mBlurRegionFade = fade;
+        if (mBackgroundBlurDrawable != null && !mExpandAnimationRunning) {
+            updateBlurAlpha();
+            invalidate();
+        }
+    }
+
+    /** Drops the blur region without tearing down the drawable; blur regions ignore ancestor alpha. */
+    public void setBlurRegionSuppressed(boolean suppressed) {
+        if (mBlurRegionSuppressed == suppressed) {
+            return;
+        }
+        mBlurRegionSuppressed = suppressed;
         if (mBackgroundBlurDrawable != null) {
-            mBackgroundBlurDrawable.setAlpha(drawableAlpha);
+            updateBlurAlpha();
+            invalidate();
         }
     }
 

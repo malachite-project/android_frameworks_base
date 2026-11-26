@@ -1,5 +1,8 @@
 package com.android.systemui.axdynamicbar.ui
 
+import android.view.HapticFeedbackConstants
+import android.view.View
+import androidx.compose.ui.geometry.Rect
 import com.android.systemui.animation.Expandable
 import com.android.systemui.axdynamicbar.domain.AxDynamicBarInteractor
 import com.android.systemui.axdynamicbar.model.IslandEvent
@@ -15,6 +18,7 @@ import javax.inject.Inject
 import kotlin.math.abs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -92,6 +96,14 @@ constructor(
     val isKeyguardMusicPillEnabled: StateFlow<Boolean> = interactor.settings.isKeyguardMusicPillEnabled
     val mediaUseWaveform: StateFlow<Boolean> = interactor.mediaUseWaveform
     val chipStyle: StateFlow<Int> = interactor.settings.chipStyle
+    val chipMorphEnabled: StateFlow<Boolean> = interactor.settings.chipMorphEnabled
+    val hapticsEnabled: StateFlow<Boolean> = interactor.settings.hapticsEnabled
+
+    fun performTapHaptic(view: View) {
+        if (hapticsEnabled.value) {
+            view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+        }
+    }
 
     val keyguardBatteryInfo: StateFlow<KeyguardBatteryInfo> =
         combine(
@@ -153,6 +165,12 @@ constructor(
 
     val isOnKeyguard: StateFlow<Boolean> = interactor.isOnKeyguard
 
+    val isShowingOnStatusBar: Flow<Boolean> =
+        combine(isEnabled, chipState, isOnKeyguard) { enabled, state, onKeyguard ->
+                enabled && state != null && !onKeyguard
+            }
+            .distinctUntilChanged()
+
     val isKeyguardFadingAway: StateFlow<Boolean> = interactor.isKeyguardFadingAway
 
     val isBouncerShowing: StateFlow<Boolean> = interactor.isBouncerShowing
@@ -169,11 +187,11 @@ constructor(
         keyguardIndicationController.setSuppressIndication(suppressed)
     }
 
-    private val _chipCenterXFraction = MutableStateFlow(0.5f)
-    val chipCenterXFraction: StateFlow<Float> = _chipCenterXFraction.asStateFlow()
+    private val _chipBoundsOnScreen = MutableStateFlow<Rect?>(null)
+    val chipBoundsOnScreen: StateFlow<Rect?> = _chipBoundsOnScreen.asStateFlow()
 
-    fun updateChipCenterX(fraction: Float) {
-        if (fraction.isFinite()) _chipCenterXFraction.value = fraction.coerceIn(0f, 1f)
+    fun updateChipBounds(bounds: Rect) {
+        if (bounds.width > 0f && bounds.height > 0f) _chipBoundsOnScreen.value = bounds
     }
 
     val isExpanded: StateFlow<Boolean> = statusBarExpansion.isExpanded

@@ -86,10 +86,17 @@ public class AxSpoofManager implements IAxSpoofManager {
     // setup. The flag is persisted, so later boots start spoofing straight away;
     // a clean flash wipes /data and the flag with it.
     private static final String ACTIVATED_KEY = "spoof_activated";
+    // Timed Tensor spoofing: the UI stores a wall-clock deadline (epoch millis, 0 = no expiry)
+    // next to the switch. The PackageManager gate honours the same deadline, so spoofed
+    // features stop being reported even before this manager gets a chance to run.
+    private static final String TENSOR_SPOOF_KEY = "pi_tensor_spoof";
+    private static final String TENSOR_SPOOF_EXPIRES_KEY = "pi_tensor_spoof_expires_at";
+    private static final String TENSOR_TARGETS_KEY = "tensor_targets";
     private static final String SETTINGS_PACKAGE = "com.android.settings";
 
     private static final String PIF_ENABLED_KEY = "spoof_pif_enabled";
     private static final String TRICKYSTORE_ENABLED_KEY = "spoof_trickystore_enabled";
+    private static final String AUTO_TARGET_KEY = "spoof_trickystore_auto_target";
     private static final String LAST_AUTO_FETCH_KEY = "spoof_pif_last_auto_fetch";
     private static final long AUTO_FETCH_COOLDOWN_MS = TimeUnit.DAYS.toMillis(1);
     private static final long REFETCH_WINDOW_DAYS = 15L;
@@ -150,8 +157,10 @@ public class AxSpoofManager implements IAxSpoofManager {
     // the config getters below return null, the refresh never starts and GMS is
     // left alone. Set once by enableSpoofing() and persisted in ACTIVATED_KEY.
     private volatile boolean mActivated;
+    private volatile boolean mTrickyStoreOn = true;
     private TaskStackListener mTaskListener;
     private final Runnable mRefreshAfterClear = this::refreshNow;
+    private final Runnable mTensorSpoofExpiry = this::enforceTensorSpoofExpiry;
 
     private final Map<String, String> mCache = new ConcurrentHashMap<>();
     private final HandlerThread mHandlerThread;
@@ -189,7 +198,13 @@ public class AxSpoofManager implements IAxSpoofManager {
                 if (uri == null) return;
                 final String last = uri.getLastPathSegment();
                 if (last == null) return;
+                if (TENSOR_SPOOF_KEY.equals(last)
+                        || TENSOR_SPOOF_EXPIRES_KEY.equals(last)) {
+                    scheduleTensorSpoofExpiry();
+                    return;
+                }
                 if (TRICKYSTORE_ENABLED_KEY.equals(last)) {
+                    mTrickyStoreOn = readTrickyStoreOn();
                     mDuckRkp.onSettingsChanged(true);
                     return;
                 }
@@ -210,6 +225,11 @@ public class AxSpoofManager implements IAxSpoofManager {
         }
         mResolver.registerContentObserver(Settings.System.getUriFor(TRICKYSTORE_ENABLED_KEY),
                 false, mObserver, UserHandle.USER_SYSTEM);
+        mTrickyStoreOn = readTrickyStoreOn();
+        mResolver.registerContentObserver(Settings.Secure.getUriFor(TENSOR_SPOOF_KEY),
+                false, mObserver, UserHandle.USER_ALL);
+        mResolver.registerContentObserver(Settings.Secure.getUriFor(TENSOR_SPOOF_EXPIRES_KEY),
+                false, mObserver, UserHandle.USER_ALL);
 
         mActivated = Settings.Secure.getIntForUser(
                 mResolver, ACTIVATED_KEY, 0, UserHandle.USER_SYSTEM) != 0;
@@ -239,6 +259,9 @@ public class AxSpoofManager implements IAxSpoofManager {
         mContext.registerReceiverAsUser(mPackageAddedReceiver, UserHandle.ALL, filter, null, mHandler);
 
         if (mActivated) scheduleFirstRefresh();
+
+        // Re-arm a timed Tensor session that survived a reboot or a system_server restart.
+        scheduleTensorSpoofExpiry();
 
         mReady = true;
         Log.i(TAG, "AxSpoofManager ready");
@@ -397,8 +420,9 @@ public class AxSpoofManager implements IAxSpoofManager {
 
     /**
      * Adds a newly-installed package to the TrickyStore target list in AUTO
-     * mode, unless it's already present or is a known Xposed/LSPosed manager
-     * (attesting through a hooked process breaks STRONG). Mirrors AlwaysStrong's
+     * mode, unless auto-targeting is switched off, it's already present or it's
+     * excluded (a known Xposed/LSPosed manager, since attesting through a hooked
+     * process breaks STRONG, or an app that doesn't check). Mirrors AlwaysStrong's
      * inotify-driven auto-target, sourced from a live PACKAGE_ADDED broadcast
      * instead of a native watcher since this already runs in system_server.
      *
@@ -409,10 +433,10 @@ public class AxSpoofManager implements IAxSpoofManager {
      */
     private void onPackageAdded(String pkg) {
         if (!mActivated) return;
-        if (mResolver == null || TrickyStoreService.XPOSED_PACKAGES.contains(pkg)
-                || TrickyStoreService.UNNECESSARY_PACKAGES.contains(pkg)) {
-            return;
-        }
+        if (mResolver == null || TrickyStoreService.isAutoTargetExcluded(pkg)) return;
+        // The user can switch auto-targeting off and manage the list by hand.
+        if (Settings.System.getIntForUser(
+                mResolver, AUTO_TARGET_KEY, 1, UserHandle.USER_SYSTEM) == 0) return;
         // Spoofing being active isn't enough: with TrickyStore switched off its target list
         // is none of our business.
         if (Settings.System.getIntForUser(
@@ -445,6 +469,7 @@ public class AxSpoofManager implements IAxSpoofManager {
      * or sooner while a fresh install is still missing its keybox or PIF config.
      */
     private void performScheduledRefresh() {
+        enforceTensorSpoofExpiry();
         if (!mActivated) return;
         refreshNow();
         long delay = REFRESH_INTERVAL_MS;
@@ -493,6 +518,10 @@ public class AxSpoofManager implements IAxSpoofManager {
             refreshKeyboxIfStale();
         } catch (Exception e) {
             Log.e(TAG, "Keybox refresh failed", e);
+        }
+        if (mResolver != null && Settings.System.getIntForUser(
+                mResolver, TRICKYSTORE_ENABLED_KEY, 1, UserHandle.USER_SYSTEM) != 0) {
+            TrickyStoreService.getInstance().checkRevocationIfDue();
         }
         try {
             refreshPixelFingerprintIfStale();
@@ -725,6 +754,61 @@ public class AxSpoofManager implements IAxSpoofManager {
             }
         } catch (Exception e) {
             Log.w(TAG, "Failed to restart GMS family after refresh", e);
+        }
+    }
+
+    /**
+     * (Re)arms the one-shot deadline of the timed Tensor spoof: at boot, whenever the switch or
+     * the deadline changes, and from the hourly tick as a safety net after deep sleep.
+     */
+    private void scheduleTensorSpoofExpiry() {
+        mHandler.removeCallbacks(mTensorSpoofExpiry);
+        if (mResolver == null) return;
+        final long expiresAt = Settings.Secure.getLongForUser(
+                mResolver, TENSOR_SPOOF_EXPIRES_KEY, 0L, UserHandle.USER_SYSTEM);
+        if (expiresAt <= 0L) return;
+        mHandler.postDelayed(mTensorSpoofExpiry,
+                Math.max(0L, expiresAt - System.currentTimeMillis()));
+    }
+
+    /**
+     * Turns the Tensor spoof off once its deadline has passed: clears the switch and the
+     * deadline, then restarts the targeted apps so they re-read their real feature set.
+     */
+    private void enforceTensorSpoofExpiry() {
+        if (mResolver == null) return;
+        final long expiresAt = Settings.Secure.getLongForUser(
+                mResolver, TENSOR_SPOOF_EXPIRES_KEY, 0L, UserHandle.USER_SYSTEM);
+        if (expiresAt <= 0L) return;
+        if (System.currentTimeMillis() < expiresAt) {
+            scheduleTensorSpoofExpiry();
+            return;
+        }
+        Settings.Secure.putLongForUser(
+                mResolver, TENSOR_SPOOF_EXPIRES_KEY, 0L, UserHandle.USER_SYSTEM);
+        if (Settings.Secure.getIntForUser(
+                mResolver, TENSOR_SPOOF_KEY, 0, UserHandle.USER_SYSTEM) == 0) {
+            return;
+        }
+        Settings.Secure.putIntForUser(
+                mResolver, TENSOR_SPOOF_KEY, 0, UserHandle.USER_SYSTEM);
+        forceStopTensorTargets();
+        Log.i(TAG, "Tensor spoofing timed session expired, spoofing disabled");
+    }
+
+    /** Restarts the packages selected in Tensor feature targets after a timed session ends. */
+    private void forceStopTensorTargets() {
+        if (!mActivated) return;
+        final String raw = Settings.Secure.getStringForUser(
+                mResolver, TENSOR_TARGETS_KEY, UserHandle.USER_SYSTEM);
+        if (isEmpty(raw)) return;
+        try {
+            ActivityManager am = mContext.getSystemService(ActivityManager.class);
+            for (String pkg : raw.split(",")) {
+                if (!isEmpty(pkg)) am.forceStopPackage(pkg.trim());
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to restart Tensor targets after timed session", e);
         }
     }
 
@@ -976,15 +1060,20 @@ public class AxSpoofManager implements IAxSpoofManager {
         return getCached(Settings.Secure.SPOOF_GAMEPROPS_CONFIG);
     }
 
+    private boolean readTrickyStoreOn() {
+        return Settings.System.getIntForUser(
+                mResolver, TRICKYSTORE_ENABLED_KEY, 1, UserHandle.USER_SYSTEM) != 0;
+    }
+
     @Override
     public String getTrickyStoreTarget() {
-        if (!mActivated) return null;
+        if (!mActivated || !mTrickyStoreOn) return null;
         return getCached(Settings.Secure.SPOOF_TRICKYSTORE_TARGET);
     }
 
     @Override
     public String getTrickyStoreKeyBox() {
-        if (!mActivated) return null;
+        if (!mActivated || !mTrickyStoreOn) return null;
         if (!canReadTrickyStoreKeybox()) return null;
         DuckRkpManager duck = mDuckRkp;
         if (duck == null) return getCached(Settings.Secure.SPOOF_TRICKYSTORE_KEYBOX);
@@ -1070,7 +1159,7 @@ public class AxSpoofManager implements IAxSpoofManager {
 
     @Override
     public String getTrickyStorePatch() {
-        if (!mActivated) return null;
+        if (!mActivated || !mTrickyStoreOn) return null;
         return getCached(Settings.Secure.SPOOF_TRICKYSTORE_PATCH);
     }
 }

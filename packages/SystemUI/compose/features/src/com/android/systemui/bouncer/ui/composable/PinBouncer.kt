@@ -87,6 +87,10 @@ import com.android.systemui.bouncer.ui.viewmodel.PinBouncerViewModel
 import com.android.systemui.common.shared.model.ContentDescription
 import com.android.systemui.common.shared.model.Icon
 import com.android.systemui.common.ui.compose.Icon
+import com.android.systemui.qs.shared.style.LiquidGlassControl
+import com.android.systemui.qs.shared.style.glassPress
+import com.android.systemui.qs.shared.style.glassRim
+import com.android.systemui.qs.shared.style.liquidGlassEnabled
 import com.android.systemui.compose.modifiers.sysuiResTag
 import com.android.systemui.kairos.internal.util.fastForEach
 import com.android.systemui.res.R
@@ -297,7 +301,8 @@ fun ActionButton(
     val isHidden = appearance == ActionButtonAppearance.Hidden
     val hiddenAlpha by animateFloatAsState(if (isHidden) 0f else 1f, label = "Action button alpha")
 
-    val foregroundColor = colorResource(PinBouncerConstants.Color.action)
+    val foregroundColor =
+        if (liquidGlassEnabled()) Color.White else colorResource(PinBouncerConstants.Color.action)
 
     val backgroundColorOrTransparentWhenHidden =
         when (appearance) {
@@ -343,7 +348,8 @@ private fun PinPadButton(
     content: @Composable (contentColor: () -> Color) -> Unit,
 ) {
     val isPressed by interactionSource.collectIsPressedAsState()
-    val indication = LocalIndication.current.takeUnless { isPressed }
+    val glass = liquidGlassEnabled() && backgroundColor.alpha > 0f
+    val indication = LocalIndication.current.takeUnless { isPressed || glass }
 
     // Pin button animation specification is asymmetric: fast animation to the pressed state, and a
     // slow animation upon release. Note that isPressed is guaranteed to be true for at least the
@@ -359,7 +365,7 @@ private fun PinPadButton(
     // into a square with rounded corners.
     val cornerRadiusFraction: Float by
         animateFloatAsState(
-            if (isAnimationEnabled && isPressed) 0.25f else 0.5f,
+            if (isAnimationEnabled && isPressed && !glass) 0.25f else 0.5f,
             label = "PinButton round corners",
             animationSpec = tween(animDurationMillis, easing = animEasing),
         )
@@ -376,9 +382,23 @@ private fun PinPadButton(
             label = "Pin button container color",
             animationSpec = colorAnimationSpec,
         )
+    val glassColor: Color by
+        animateColorAsState(
+            when {
+                isPressed -> Color.White.copy(alpha = 0.45f)
+                lockscreenTimeoutDeactivatePinPad() && !isEnabled ->
+                    LiquidGlassControl.copy(alpha = LiquidGlassControl.alpha * 0.4f)
+                else -> LiquidGlassControl
+            },
+            label = "Pin button glass color",
+            animationSpec = colorAnimationSpec,
+        )
     val contentColor =
         animateColorAsState(
             when {
+                glass && lockscreenTimeoutDeactivatePinPad() && !isEnabled ->
+                    Color.White.copy(alpha = 0.38f)
+                glass -> Color.White
                 isAnimationEnabled && isPressed ->
                     colorResource(PinBouncerConstants.Color.digitPressed)
                 lockscreenTimeoutDeactivatePinPad() && !isEnabled ->
@@ -389,6 +409,7 @@ private fun PinPadButton(
             animationSpec = colorAnimationSpec,
         )
 
+    val glassLook = if (glass) Modifier.glassPress().glassRim(CircleShape) else Modifier
     Box(
         contentAlignment = Alignment.Center,
         modifier =
@@ -398,9 +419,10 @@ private fun PinPadButton(
                 }
                 .sizeIn(maxWidth = pinButtonMaxSize, maxHeight = pinButtonMaxSize)
                 .aspectRatio(1f)
+                .then(glassLook)
                 .drawBehind {
                     drawRoundRect(
-                        color = containerColor,
+                        color = if (glass) glassColor else containerColor,
                         cornerRadius = CornerRadius(cornerRadiusFraction * size.height),
                     )
                 }

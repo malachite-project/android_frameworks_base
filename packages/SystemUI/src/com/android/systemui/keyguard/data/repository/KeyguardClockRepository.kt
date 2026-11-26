@@ -48,6 +48,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapNotNull
@@ -77,6 +79,9 @@ interface KeyguardClockRepository {
 
     val forcedClockSize: Flow<ClockSize?>
 
+    /** Whether a custom lockscreen clock style replaces the clock plugin views. */
+    val isCustomClockEnabled: StateFlow<Boolean>
+
     fun setClockSize(size: ClockSize)
 }
 
@@ -97,6 +102,21 @@ constructor(
     /** Receive SMALL or LARGE clock should be displayed on keyguard. */
     private val _clockSize: MutableStateFlow<ClockSize> = MutableStateFlow(ClockSize.LARGE)
     override val clockSize: StateFlow<ClockSize> = _clockSize.asStateFlow()
+    override val isCustomClockEnabled: StateFlow<Boolean> =
+        secureSettings
+            .observerFlow(
+                names = arrayOf(Settings.Secure.LOCK_SCREEN_CUSTOM_CLOCK_STYLE),
+                userId = UserHandle.USER_ALL,
+            )
+            .onStart { emit(Unit) } // Forces an initial update.
+            .map { withContext(backgroundDispatcher) { readCustomClockEnabled() } }
+            .distinctUntilChanged()
+            .stateIn(
+                scope = applicationScope,
+                started = SharingStarted.Eagerly,
+                initialValue = readCustomClockEnabled(),
+            )
+
     override val forcedClockSize: Flow<ClockSize?> =
         if (featureFlags.isEnabled(Flags.LOCKSCREEN_ENABLE_LANDSCAPE)) {
             configurationRepository.onAnyConfigurationChange.map {
@@ -162,8 +182,14 @@ constructor(
     override val currentClockFontAxesWidth: Float?
         get() = clockRegistry.settings?.axes?.get(GSFAxes.WIDTH.tag)
 
+    private val clockFontFamily: Flow<String?> =
+        configurationRepository.onAnyConfigurationChange
+            .onStart { emit(Unit) }
+            .map { readClockFontFamily() }
+            .distinctUntilChanged()
+
     override val currentClock: StateFlow<ClockController?> =
-        currentClockId
+        combine(currentClockId, clockFontFamily) { clockId, _ -> clockId }
             .map {
                 clockEventController.clock = clockRegistry.createCurrentClock(context)
                 clockEventController.clock
@@ -174,6 +200,8 @@ constructor(
                 initialValue = null,
             )
 
+    // Custom clock styles follow the same dynamic/small selection as the plugin clocks; styles
+    // that are too big to grow just keep their size, see ClockStyle#setLargeClock.
     private fun getClockSize(): ClockSizeSetting {
         val isDoubleLineClock = secureSettings.getIntForUser(
             Settings.Secure.LOCKSCREEN_USE_DOUBLE_LINE_CLOCK,
@@ -182,21 +210,29 @@ constructor(
             ),
             UserHandle.USER_CURRENT
         )
-        val clockStyleEnabled = secureSettings.getIntForUser(
-            Settings.Secure.LOCK_SCREEN_CUSTOM_CLOCK_STYLE,
-            0, // Default value
-            UserHandle.USER_CURRENT
-        ) != 0
         val lockscreenWidgetsEnabled = systemSettings.getIntForUser(
             "lockscreen_widgets_enabled",
             0, // Default value
             UserHandle.USER_CURRENT
         ) != 0
-        val clockSettingValue = if (clockStyleEnabled || lockscreenWidgetsEnabled) {
+        val clockSettingValue = if (lockscreenWidgetsEnabled) {
             0 
         } else {
             isDoubleLineClock
         }
         return ClockSizeSetting.fromSettingValue(clockSettingValue)
     }
+
+    private fun readClockFontFamily(): String? {
+        val res = context.resources
+        val id = res.getIdentifier("config_clockFontFamily", "string", "android")
+        return if (id != 0) res.getString(id) else null
+    }
+
+    private fun readCustomClockEnabled(): Boolean =
+        secureSettings.getIntForUser(
+            Settings.Secure.LOCK_SCREEN_CUSTOM_CLOCK_STYLE,
+            0,
+            UserHandle.USER_CURRENT,
+        ) != 0
 }

@@ -125,6 +125,7 @@ internal fun KeyguardExpandedContent(
     interactor: IslandActions,
     onCollapse: () -> Unit,
     hapticsViewModelFactory: SliderHapticsViewModel.Factory,
+    panelModifier: Modifier = Modifier,
 ) {
     if (event is IslandEvent.KeyguardIndication ||
         event is IslandEvent.AppSwitch ||
@@ -189,12 +190,14 @@ internal fun KeyguardExpandedContent(
             .padding(top = topClearance),
         contentAlignment = Alignment.Center,
     ) {
-        when (event) {
-            is IslandEvent.Media -> KeyguardMediaPanel(event, interactor)
-            is IslandEvent.Timer -> KeyguardTimerPanel(event, interactor)
-            is IslandEvent.Stopwatch -> KeyguardStopwatchPanel(event, interactor)
-            is IslandEvent.AudioRecording -> KeyguardAudioRecordingPanel(event, interactor)
-            else -> KeyguardGenericPanel(event, interactor, hapticsViewModelFactory)
+        Box(modifier = panelModifier, contentAlignment = Alignment.Center) {
+            when (event) {
+                is IslandEvent.Media -> KeyguardMediaPanel(event, interactor)
+                is IslandEvent.Timer -> KeyguardTimerPanel(event, interactor)
+                is IslandEvent.Stopwatch -> KeyguardStopwatchPanel(event, interactor)
+                is IslandEvent.AudioRecording -> KeyguardAudioRecordingPanel(event, interactor)
+                else -> KeyguardGenericPanel(event, interactor, hapticsViewModelFactory)
+            }
         }
     }
 }
@@ -240,6 +243,21 @@ private fun ProgressRing(
             drawCircle(color = color, radius = handle, center = Offset(cx, cy))
         }
     }
+}
+
+@Composable
+private fun MediaIconButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    IconButton(
+        onClick = onClick,
+        modifier = modifier.pressScale(interaction),
+        interactionSource = interaction,
+        content = content,
+    )
 }
 
 /**
@@ -446,13 +464,16 @@ private fun KeyguardMediaPanel(event: IslandEvent.Media, interactor: IslandActio
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
+                        val outputInteraction = remember { MutableInteractionSource() }
                         Surface(
                             onClick = {
                                 interactor.openMediaOutputSwitcher()
                                 interactor.collapseIsland()
                             },
+                            modifier = Modifier.pressScale(outputInteraction),
                             shape = ShapeChip,
                             color = colors.accent.copy(alpha = AlphaSubtle),
+                            interactionSource = outputInteraction,
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = SpaceLg, vertical = SpaceSm),
@@ -487,7 +508,7 @@ private fun KeyguardMediaPanel(event: IslandEvent.Media, interactor: IslandActio
                         horizontalArrangement = Arrangement.Center,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        IconButton(
+                        MediaIconButton(
                             onClick = {
                                 event.customActions.firstOrNull()?.let {
                                     interactor.sendCustomAction(it.action)
@@ -506,7 +527,7 @@ private fun KeyguardMediaPanel(event: IslandEvent.Media, interactor: IslandActio
 
                         Spacer(Modifier.width(SpaceSm))
 
-                        IconButton(
+                        MediaIconButton(
                             onClick = {
                                 interactor.skipPrev()
                                 prevToggleCount++
@@ -518,14 +539,19 @@ private fun KeyguardMediaPanel(event: IslandEvent.Media, interactor: IslandActio
 
                         Spacer(Modifier.width(SpaceSm))
 
+                        val playInteraction = remember { MutableInteractionSource() }
                         Surface(
                             onClick = {
                                 interactor.togglePlayPause()
                                 playPauseToggleCount++
                             },
-                            modifier = Modifier.size(SizeButtonLg).squishAnimation(playPauseToggleCount),
+                            modifier = Modifier
+                                .pressScale(playInteraction)
+                                .size(SizeButtonLg)
+                                .squishAnimation(playPauseToggleCount),
                             shape = CircleShape,
                             color = colors.accent.copy(alpha = AlphaAccent),
+                            interactionSource = playInteraction,
                         ) {
                             Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
                                 AnimatedContent(
@@ -548,7 +574,7 @@ private fun KeyguardMediaPanel(event: IslandEvent.Media, interactor: IslandActio
 
                         Spacer(Modifier.width(SpaceSm))
 
-                        IconButton(
+                        MediaIconButton(
                             onClick = {
                                 interactor.skipNext()
                                 nextToggleCount++
@@ -560,7 +586,7 @@ private fun KeyguardMediaPanel(event: IslandEvent.Media, interactor: IslandActio
 
                         Spacer(Modifier.width(SpaceSm))
 
-                        IconButton(
+                        MediaIconButton(
                             onClick = {
                                 event.customActions.getOrNull(1)?.let {
                                     interactor.sendCustomAction(it.action)

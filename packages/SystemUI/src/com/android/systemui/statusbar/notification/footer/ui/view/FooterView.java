@@ -43,6 +43,7 @@ import androidx.annotation.NonNull;
 
 import com.android.internal.graphics.ColorUtils;
 import com.android.systemui.common.shared.colors.SurfaceEffectColors;
+import com.android.systemui.qs.shared.style.LiquidGlass;
 import com.android.systemui.res.R;
 import com.android.systemui.scene.shared.flag.SceneContainerFlag;
 import com.android.systemui.shade.ui.ShadeColors;
@@ -343,6 +344,19 @@ public class FooterView extends StackScrollerDecorView {
         } else {
             scHigh = 0;
         }
+        if (LiquidGlass.isOnShade(mContext)) {
+            // The buttons take the same faint frost as the cards. In the light ColorOS shade the
+            // cards sit on a light frost under dark text, and the dark glass would hide the labels.
+            final int surface = isCosLightShade() ? COS_LIGHT_FOOTER_FROST
+                    : LiquidGlass.viewSurface();
+            final ColorFilter glass = new PorterDuffColorFilter(surface | 0xFF000000, SRC_ATOP);
+            final int glassAlpha = Color.alpha(surface);
+            for (Drawable bg : new Drawable[] {clearAllBg, settingsBg, historyBg}) {
+                if (bg == null) continue;
+                bg.setColorFilter(glass);
+                bg.setAlpha(glassAlpha);
+            }
+        }
 
         mClearAllButton.setBackground(clearAllBg);
         mClearAllButton.setTextColor(onSurface);
@@ -364,6 +378,15 @@ public class FooterView extends StackScrollerDecorView {
                             + " background=" + DrawableDumpKt.dumpToString(settingsBg));
         }
     }
+
+    private boolean isCosLightShade() {
+        return LiquidGlass.isCosStyle(mContext)
+                && (getResources().getConfiguration().uiMode
+                        & Configuration.UI_MODE_NIGHT_MASK) != Configuration.UI_MODE_NIGHT_YES;
+    }
+
+    /** Matches the light ColorOS notification card frost in NotificationBackgroundView. */
+    private static final int COS_LIGHT_FOOTER_FROST = 0xA6F2F2F2;
 
     public void setIsBlurSupported(boolean isBlurSupported) {
         if (notificationShadeBlur()) {

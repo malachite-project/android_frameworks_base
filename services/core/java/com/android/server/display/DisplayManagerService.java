@@ -1158,14 +1158,16 @@ public final class DisplayManagerService extends SystemService {
     @VisibleForTesting
     void performTraversalInternal(SurfaceControl.Transaction t,
             SparseArray<SurfaceControl.Transaction> displayTransactions) {
+        final SurfaceControl.Transaction unowned = new SurfaceControl.Transaction();
         synchronized (mSyncRoot) {
             if (!mPendingTraversal) {
                 return;
             }
             mPendingTraversal = false;
 
-            performTraversalLocked(t, displayTransactions);
+            performTraversalLocked(unowned, displayTransactions);
         }
+        unowned.apply();
 
         // List is self-synchronized copy-on-write.
         for (DisplayTransactionListener listener : mDisplayTransactionListeners) {
@@ -2957,7 +2959,30 @@ public final class DisplayManagerService extends SystemService {
         Display.Mode mode = getStoredUserPreferredModeLocked(device);
         if (mode != null) {
             device.setUserPreferredDisplayModeLocked(mode);
+            return;
         }
+
+        // Apply default mode from display device config's densityMapping default entry
+        DisplayDeviceConfig config = device.getDisplayDeviceConfig();
+        DensityMapping.Entry defaultEntry = null;
+        if (config != null && config.getDensityMapping() != null) {
+            defaultEntry = config.getDensityMapping().getDefaultEntry();
+        }
+
+        if (defaultEntry == null) {
+            return;
+        }
+
+        Display.Mode.Builder modeBuilder = new Display.Mode.Builder();
+        modeBuilder.setResolution(defaultEntry.width, defaultEntry.height);
+        Display.Mode defaultMode = modeBuilder.build();
+        device.setUserPreferredDisplayModeLocked(defaultMode);
+        UserManager userManager = getUserManager();
+        int userSerial = userManager != null ? userManager.getUserSerialNumber(mCurrentUserId)
+                : UserHandle.USER_SERIAL_SYSTEM;
+        mPersistentDataStore.setUserPreferredDisplayMode(userSerial, device,
+                new DisplayMode(defaultEntry.width, defaultEntry.height,
+                        Display.INVALID_DISPLAY_REFRESH_RATE));
     }
 
     @Nullable
@@ -4583,7 +4608,7 @@ public final class DisplayManagerService extends SystemService {
             if (display == null || !display.isEnabledLocked()) {
                 return null;
             }
-            DisplayPowerController dpc = mDisplayPowerControllers.get(displayId);
+            DisplayPowerController dpc = getBrightnessControllerLocked(displayId);
             if (dpc != null) {
                 return dpc.getBrightnessInfo();
             }
@@ -4593,7 +4618,7 @@ public final class DisplayManagerService extends SystemService {
 
     private float getBrightnessInternal(int displayId) {
         synchronized (mSyncRoot) {
-            DisplayPowerController dpc = mDisplayPowerControllers.get(displayId);
+            DisplayPowerController dpc = getBrightnessControllerLocked(displayId);
             if (dpc != null) {
                 return dpc.getScreenBrightnessSetting();
             } else {
@@ -4622,12 +4647,33 @@ public final class DisplayManagerService extends SystemService {
         }
         MathUtils.constrain(brightness, PowerManager.BRIGHTNESS_MIN, PowerManager.BRIGHTNESS_MAX);
         synchronized (mSyncRoot) {
-            DisplayPowerController dpc = mDisplayPowerControllers.get(displayId);
+            DisplayPowerController dpc = getBrightnessControllerLocked(displayId);
             if (dpc != null) {
                 dpc.setBrightness(brightness);
             }
             mPersistentDataStore.saveIfNeeded();
         }
+    }
+
+    /**
+     * Returns the DisplayPowerController that owns the brightness of the given display. Displays
+     * with a lead display have their brightness driven by the lead, so brightness requests for
+     * them are redirected there.
+     */
+    @GuardedBy("mSyncRoot")
+    private DisplayPowerController getBrightnessControllerLocked(int displayId) {
+        DisplayPowerController dpc = mDisplayPowerControllers.get(displayId);
+        if (dpc == null) {
+            return null;
+        }
+        final int leadDisplayId = dpc.getLeadDisplayId();
+        if (leadDisplayId != Layout.NO_LEAD_DISPLAY) {
+            DisplayPowerController leadDpc = mDisplayPowerControllers.get(leadDisplayId);
+            if (leadDpc != null) {
+                return leadDpc;
+            }
+        }
+        return dpc;
     }
 
     private void setConnectionPreferenceInternal(String uniqueId, int preference) {
@@ -6098,8 +6144,10 @@ public final class DisplayManagerService extends SystemService {
             final long token = Binder.clearCallingIdentity();
             try {
                 synchronized (mSyncRoot) {
-                    mDisplayPowerControllers.get(displayId)
-                            .setTemporaryBrightness(brightness);
+                    DisplayPowerController dpc = getBrightnessControllerLocked(displayId);
+                    if (dpc != null) {
+                        dpc.setTemporaryBrightness(brightness);
+                    }
                 }
             } finally {
                 Binder.restoreCallingIdentity(token);

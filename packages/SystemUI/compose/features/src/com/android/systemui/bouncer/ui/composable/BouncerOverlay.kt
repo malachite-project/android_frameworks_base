@@ -16,6 +16,8 @@
 
 package com.android.systemui.bouncer.ui.composable
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
@@ -28,7 +30,12 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.overscroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
@@ -46,6 +53,7 @@ import com.android.systemui.bouncer.ui.viewmodel.BouncerOverlayContentViewModel
 import com.android.systemui.bouncer.ui.viewmodel.BouncerUserActionsViewModel
 import com.android.systemui.compose.modifiers.sysuiResTag
 import com.android.systemui.dagger.SysUISingleton
+import com.android.systemui.qs.shared.style.LocalGlassBlurAlpha
 import com.android.systemui.lifecycle.rememberViewModel
 import com.android.systemui.res.R
 import com.android.systemui.scene.shared.model.Overlays
@@ -90,12 +98,30 @@ constructor(
     }
 
     @Composable
-    override fun ContentScope.Content(modifier: Modifier) =
-        BouncerOverlay(
-            viewModel = rememberViewModel("BouncerOverlay") { contentViewModelFactory.create() },
-            dialogFactory = dialogFactory,
-            modifier = modifier.element(Bouncer.Elements.Root),
-        )
+    override fun ContentScope.Content(modifier: Modifier) {
+        // The bouncer content can stay invisible after the transition reaches its end (passive
+        // auth delays it), and compositor glass ignores the content alpha, so wait until no
+        // transition touches the bouncer.
+        val settled by remember(layoutState) {
+            derivedStateOf {
+                layoutState.currentTransitions.none { it.isTransitioningFromOrTo(contentKey) }
+            }
+        }
+        val glassAlpha = remember { Animatable(0f) }
+        LaunchedEffect(settled) {
+            if (settled) glassAlpha.animateTo(1f, tween(GLASS_FADE_IN_MILLIS))
+            else glassAlpha.snapTo(0f)
+        }
+        val glassFade = remember(glassAlpha) { { glassAlpha.value } }
+        CompositionLocalProvider(LocalGlassBlurAlpha provides glassFade) {
+            BouncerOverlay(
+                viewModel =
+                    rememberViewModel("BouncerOverlay") { contentViewModelFactory.create() },
+                dialogFactory = dialogFactory,
+                modifier = modifier.element(Bouncer.Elements.Root),
+            )
+        }
+    }
 }
 
 @Composable
@@ -175,3 +201,5 @@ private fun containerConfig(): ContainerConfig {
     val maxShortEdge = dimensionResource(R.dimen.bouncer_container_max_short_edge)
     return ContainerConfig(sizeFraction, minLongEdge, minShortEdge, maxLongEdge, maxShortEdge)
 }
+
+private const val GLASS_FADE_IN_MILLIS = 150

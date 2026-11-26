@@ -18,6 +18,7 @@ package android.security.trickystore;
 
 import android.app.ActivityManager;
 import android.app.IActivityManager;
+import android.os.Process;
 import android.os.RemoteException;
 import android.os.SystemClock;
 import android.security.keystore.KeyGenParameterSpec;
@@ -104,6 +105,9 @@ public class TrickyStoreService {
     private static final long CACHE_TRUST_WINDOW_MS = 7L * 24 * 60 * 60 * 1000L;
     private static final java.io.File REVOCATION_CACHE_FILE =
         new java.io.File("/data/system/trickystore/revocation_cache.json");
+    private static final java.io.File REVOCATION_CHECKED_FILE =
+        new java.io.File("/data/system/trickystore/revocation_checked_at");
+    private final Object mRevocationLock = new Object();
     private volatile PatchConfig mPatchConfig =
             new PatchConfig(null, Collections.emptyMap());
     // Attesting through a hooked process breaks STRONG — always skipped
@@ -157,6 +161,58 @@ public class TrickyStoreService {
             "com.google.android.apps.youtube.music",
             "org.zwanoo.android.speedtest"
     );
+    // Further packages AxSpoofManager skips when auto-targeting a new install: app stores,
+    // root and system tools and proxy clients, none of which run integrity checks. Compiled
+    // from the exclude lists of Targeter and Tricky Addon Enhanced. Like UNNECESSARY_PACKAGES
+    // this never touches an existing target list or Evolver's picker.
+    public static final java.util.Set<String> AUTO_TARGET_EXCLUDED_PACKAGES = java.util.Set.of(
+            // App stores
+            "com.looker.droidify",
+            "com.aurora.store",
+            // Root and system tools
+            "io.github.muntashirakon.AppManager",
+            "io.github.muntashirakon.AppManager.debug",
+            "com.tsng.hidemyapplist",
+            "org.frknkrc44.hma_oss",
+            "eu.darken.sdmse",
+            "me.gm.cleaner",
+            "com.speedsoftware.rootexplorer",
+            "com.mixplorer",
+            "com.merxury.blocker",
+            "rikka.appops",
+            "com.piriform.ccleaner",
+            "io.github.vvb2060.magisk.lite",
+            "com.resukisu.resukisu",
+            // Proxy clients
+            "com.v2ray.ang",
+            "com.github.shadowsocks",
+            "com.github.metacubex.clash.meta",
+            "com.github.kr328.clash.monet"
+    );
+    // Vendor prefixes covering whole families of such packages (F-Droid and its basic
+    // flavour, LSPosed and LSPatch).
+    private static final String[] AUTO_TARGET_EXCLUDED_PREFIXES = {
+            "org.fdroid.",
+            "org.lsposed.",
+            "io.github.lsposed."
+    };
+
+    /**
+     * True if a newly installed package should not be added to the target list on its own:
+     * Xposed managers, {@link #UNNECESSARY_PACKAGES} and {@link #AUTO_TARGET_EXCLUDED_PACKAGES},
+     * or anything under {@link #AUTO_TARGET_EXCLUDED_PREFIXES}.
+     */
+    public static boolean isAutoTargetExcluded(String pkg) {
+        if (pkg == null) return true;
+        if (XPOSED_PACKAGES.contains(pkg) || UNNECESSARY_PACKAGES.contains(pkg)
+                || AUTO_TARGET_EXCLUDED_PACKAGES.contains(pkg)) {
+            return true;
+        }
+        for (String prefix : AUTO_TARGET_EXCLUDED_PREFIXES) {
+            if (pkg.startsWith(prefix)) return true;
+        }
+        return false;
+    }
     // Default TrickyStore targets, in the same syntax as SPOOF_TRICKYSTORE_TARGET:
     // "pkg" is AUTO, "pkg?" leaf hack, "pkg!" cert generation, "pkg-" skip.
     // AxSpoofManager writes this into a target setting that was never set, so a
@@ -635,13 +691,30 @@ public class TrickyStoreService {
         }
     }
 
+    public void checkRevocationIfDue() {
+        if (!ENABLE_REVOCATION_CHECK || Process.myUid() != Process.SYSTEM_UID) return;
+        FetchResult fetched = fetchFromAms(am -> am.getSpoofTrickyStoreKeyBox());
+        String xml = fetched.success && fetched.value != null ? decodeKeybox(fetched.value) : null;
+        if (xml != null) checkKeyboxRevocation(xml);
+    }
+
     private void checkKeyboxRevocation(String xml) {
-        long now = System.currentTimeMillis();
-        if (now - mLastRevocationCheckMs < REVOCATION_CHECK_COOLDOWN_MS) {
-            Log.d(TAG, "Skipping revocation check — ran within 24h");
+        if (Process.myUid() != Process.SYSTEM_UID) {
+            if (REVOCATION_CACHE_FILE.exists()) checkCachedRevocation(extractCertSerials(xml));
             return;
         }
+        long now = System.currentTimeMillis();
+        synchronized (mRevocationLock) {
+            if (mLastRevocationCheckMs == 0L) mLastRevocationCheckMs = readRevocationCheckedAt();
+            long since = now - mLastRevocationCheckMs;
+            if (since >= 0 && since < REVOCATION_CHECK_COOLDOWN_MS) {
+                Log.d(TAG, "Skipping revocation check — ran within 24h");
+                return;
+            }
+            mLastRevocationCheckMs = now;
+        }
         new Thread(() -> {
+            writeRevocationCheckedAt(now);
             try {
                 List<String> serials = extractCertSerials(xml);
                 if (serials.isEmpty()) return;
@@ -670,7 +743,6 @@ public class TrickyStoreService {
                         writeCachedRevokedSerial(serial);
                     }
                 }
-                mLastRevocationCheckMs = now;
             } catch (Exception e) {
                 Log.w(TAG, "Keybox revocation check failed, trying offline cache", e);
                 try {
@@ -680,6 +752,27 @@ public class TrickyStoreService {
                 }
             }
         }, "TrickyStore-RevocationCheck").start();
+    }
+
+    private static long readRevocationCheckedAt() {
+        try {
+            return Long.parseLong(new String(
+                    java.nio.file.Files.readAllBytes(REVOCATION_CHECKED_FILE.toPath()),
+                    StandardCharsets.UTF_8).trim());
+        } catch (Exception e) {
+            return 0L;
+        }
+    }
+
+    private static void writeRevocationCheckedAt(long time) {
+        try {
+            REVOCATION_CHECKED_FILE.getParentFile().mkdirs();
+            java.nio.file.Files.write(REVOCATION_CHECKED_FILE.toPath(),
+                    Long.toString(time).getBytes(StandardCharsets.UTF_8));
+            android.system.Os.chmod(REVOCATION_CHECKED_FILE.getAbsolutePath(), 0600);
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to write revocation check time", e);
+        }
     }
 
     /**
@@ -774,7 +867,11 @@ public class TrickyStoreService {
                     alias, KeyProperties.PURPOSE_SIGN)
                     .setAlgorithmParameterSpec(new ECGenParameterSpec("secp256r1"))
                     .setDigests(KeyProperties.DIGEST_SHA256)
-                    .setAttestationChallenge(new byte[16]);
+                    .setAttestationChallenge(new byte[16])
+                    // A targeted request attests device ids. A challenge-only key
+                    // can succeed on this KeyMint and cache a healthy TEE, after
+                    // which the real request dies with CANNOT_ATTEST_IDS.
+                    .setDevicePropertiesAttestationIncluded(true);
             kpg.initialize(builder.build());
             kpg.generateKeyPair();
             Log.i(TAG, "Attested key generation probe successful");
@@ -819,6 +916,21 @@ public class TrickyStoreService {
             if (mode == Mode.SKIP) continue;
             if (mode == Mode.GENERATE) return hasKeyboxes();
             if (mode == Mode.AUTO && hasKeyboxes() && isTeeBroken()) return true;
+        }
+        return false;
+    }
+
+    /**
+     * True for any non-skip target. Unlike {@link #needHack} and
+     * {@link #needGenerate}, this does not consult the TEE probe.
+     */
+    public boolean isAttestationTarget(int callingUid, String[] packages) {
+        if (packages == null) return false;
+        maybeRefreshTargets();
+        for (String pkg : packages) {
+            if (XPOSED_PACKAGES.contains(pkg)) continue;
+            Mode mode = mPackageModes.get(pkg);
+            if (mode != null && mode != Mode.SKIP) return true;
         }
         return false;
     }
@@ -917,5 +1029,19 @@ public class TrickyStoreService {
     public boolean isTeeBroken() {
         ensureTeeStatus();
         return Boolean.TRUE.equals(mTeeBroken);
+    }
+
+    /**
+     * KeyMint could not produce an attestation certificate. That is either
+     * ATTESTATION_KEYS_NOT_PROVISIONED or CANNOT_ATTEST_IDS for the spoofed
+     * device ids. A healthy probe result is cached for the life of this
+     * process, which would leave AUTO targets on leaf hack with nothing to
+     * rewrite. Remember that so the following calls generate a chain instead.
+     */
+    public void noteAttestationKeysMissing() {
+        mTeeBroken = Boolean.TRUE;
+        mTeeCheckedAtMs = System.currentTimeMillis();
+        AttestationUtils.setTeeBroken(true);
+        Log.w(TAG, "KeyMint cannot attest; using certificate generation");
     }
 }

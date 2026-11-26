@@ -26,12 +26,15 @@ import android.graphics.fonts.FontFamily;
 import android.graphics.fonts.FontManager;
 import android.graphics.fonts.FontUpdateRequest;
 import android.graphics.fonts.SystemFonts;
+import android.os.Binder;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.os.ResultReceiver;
 import android.os.SharedMemory;
 import android.os.ShellCallback;
 import android.system.ErrnoException;
+import android.system.Os;
+import android.system.OsConstants;
 import android.text.FontConfig;
 import android.util.AndroidException;
 import android.util.ArrayMap;
@@ -71,10 +74,12 @@ public final class FontManagerService extends IFontManager.Stub {
 
     private static final String FONT_FILES_DIR = "/data/fonts/files";
     private static final String CONFIG_XML_FILE = "/data/fonts/config/config.xml";
+    private static final String EMOJI_DIR = "/data/fonts/emoji";
+    /** Prefix of the throwaway file used to test fs-verity. Must stay out of font loading. */
+    private static final String FSVERITY_PROBE_PREFIX = ".fsverity_probe";
 
-    public static final boolean axFontFeatureSupport = true;
-
-    @android.annotation.EnforcePermission("UPDATE_FONTS")
+    @android.annotation.EnforcePermission(android.Manifest.permission.UPDATE_FONTS)
+    @RequiresPermission(Manifest.permission.UPDATE_FONTS)
     @Override
     public FontConfig getFontConfig() {
         super.getFontConfig_enforcePermission();
@@ -129,7 +134,7 @@ public final class FontManagerService extends IFontManager.Stub {
                 "UPDATE_FONTS permission required.");
         try {
             synchronized (mUpdatableFontDirLock) {
-                if (mUpdatableFontDir == null) {
+                if (!ensureUpdatableFontDirLocked()) {
                     return FontManager.RESULT_ERROR_FONT_UPDATER_DISABLED;
                 }
                 mUpdatableFontDir.installCustomFont(fontFd.getFileDescriptor());
@@ -176,6 +181,101 @@ public final class FontManagerService extends IFontManager.Stub {
                 "UPDATE_FONTS permission required.");
         synchronized (mUpdatableFontDirLock) {
             return mUpdatableFontDir == null ? null : mUpdatableFontDir.getCustomFontName();
+        }
+    }
+
+    @RequiresPermission(Manifest.permission.UPDATE_FONTS)
+    @Override
+    public int installCustomEmoji(@NonNull ParcelFileDescriptor fontFd) {
+        Objects.requireNonNull(fontFd);
+        getContext().enforceCallingPermission(Manifest.permission.UPDATE_FONTS,
+                "UPDATE_FONTS permission required.");
+        try {
+            synchronized (mUpdatableFontDirLock) {
+                if (!ensureUpdatableFontDirLocked()) {
+                    return FontManager.RESULT_ERROR_FONT_UPDATER_DISABLED;
+                }
+                mUpdatableFontDir.installCustomEmoji(fontFd.getFileDescriptor());
+                updateSerializedFontMap();
+            }
+            return FontManager.RESULT_SUCCESS;
+        } catch (SystemFontException e) {
+            Slog.e(TAG, "Failed to install custom emoji", e);
+            return e.getErrorCode();
+        } finally {
+            try {
+                fontFd.close();
+            } catch (IOException e) {
+                Slog.w(TAG, "Failed to close custom emoji fd", e);
+            }
+        }
+    }
+
+    @RequiresPermission(Manifest.permission.UPDATE_FONTS)
+    @Override
+    public int clearCustomEmoji() {
+        getContext().enforceCallingPermission(Manifest.permission.UPDATE_FONTS,
+                "UPDATE_FONTS permission required.");
+        final int callingUid = Binder.getCallingUid();
+        try {
+            synchronized (mUpdatableFontDirLock) {
+                if (mUpdatableFontDir == null) {
+                    return FontManager.RESULT_ERROR_FONT_UPDATER_DISABLED;
+                }
+                mUpdatableFontDir.clearCustomEmoji();
+                updateSerializedFontMap();
+            }
+        } catch (SystemFontException e) {
+            Slog.e(TAG, "Failed to clear custom emoji", e);
+            return e.getErrorCode();
+        }
+        // Not under mUpdatableFontDirLock: this calls installd for every app.
+        mAppEmojiReplacer.restore(callingUid);
+        return FontManager.RESULT_SUCCESS;
+    }
+
+    @RequiresPermission(Manifest.permission.UPDATE_FONTS)
+    @Override
+    @Nullable
+    public String getCustomEmojiName() {
+        getContext().enforceCallingPermission(Manifest.permission.UPDATE_FONTS,
+                "UPDATE_FONTS permission required.");
+        synchronized (mUpdatableFontDirLock) {
+            return mUpdatableFontDir == null ? null : mUpdatableFontDir.getCustomEmojiName();
+        }
+    }
+
+    @RequiresPermission(Manifest.permission.UPDATE_FONTS)
+    @Override
+    public int applyCustomEmojiToApps() {
+        getContext().enforceCallingPermission(Manifest.permission.UPDATE_FONTS,
+                "UPDATE_FONTS permission required.");
+        final int callingUid = Binder.getCallingUid();
+        // Opened under the lock, so the fd is the font that is active right now. Holding it
+        // keeps that inode for the whole run, whatever a concurrent install or clear does.
+        ParcelFileDescriptor fd;
+        synchronized (mUpdatableFontDirLock) {
+            if (mUpdatableFontDir == null) {
+                return FontManager.RESULT_ERROR_FONT_UPDATER_DISABLED;
+            }
+            File emoji = mUpdatableFontDir.getCustomEmojiFile();
+            if (emoji == null) {
+                return FontManager.RESULT_ERROR_FONT_NOT_FOUND;
+            }
+            try {
+                fd = ParcelFileDescriptor.open(emoji, ParcelFileDescriptor.MODE_READ_ONLY);
+            } catch (IOException e) {
+                Slog.e(TAG, "Failed to open custom emoji", e);
+                return FontManager.RESULT_ERROR_FAILED_TO_OPEN_FONT_FILE;
+            }
+        }
+        // Not under mUpdatableFontDirLock: this calls installd for every app and can take a
+        // while. AppEmojiReplacer serializes concurrent runs itself.
+        try (ParcelFileDescriptor font = fd) {
+            return mAppEmojiReplacer.apply(font, callingUid);
+        } catch (IOException e) {
+            Slog.w(TAG, "Failed to close custom emoji fd", e);
+            return FontManager.RESULT_SUCCESS;
         }
     }
 
@@ -265,9 +365,6 @@ public final class FontManagerService extends IFontManager.Stub {
 
         @Override
         public boolean isFromTrustedProvider(String fontPath, byte[] pkcs7Signature) {
-            if (axFontFeatureSupport && (pkcs7Signature == null || pkcs7Signature.length == 0)) {
-                return true;
-            }
             final byte[] digest = VerityUtils.getFsverityDigest(fontPath);
             if (digest == null) {
                 Log.w(TAG, "Failed to get fs-verity digest for " + fontPath);
@@ -283,6 +380,11 @@ public final class FontManagerService extends IFontManager.Stub {
                 }
             }
             return false;
+        }
+
+        @Override
+        public boolean hasFsverity(String fontPath) {
+            return VerityUtils.hasFsverity(fontPath);
         }
 
         @Override
@@ -310,6 +412,16 @@ public final class FontManagerService extends IFontManager.Stub {
     @Nullable
     private UpdatableFontDir mUpdatableFontDir;
 
+    private final AppEmojiReplacer mAppEmojiReplacer;
+
+    /**
+     * Definite fs-verity probe result for {@link #FONT_FILES_DIR} on devices that shipped
+     * before Android 11. Null until the probe can determine support.
+     */
+    @GuardedBy("mUpdatableFontDirLock")
+    @Nullable
+    private Boolean mFontDirFsverityAvailable;
+
     // mSerializedFontMapLock can be acquired while holding mUpdatableFontDirLock.
     // mUpdatableFontDirLock should not be newly acquired while holding mSerializedFontMapLock.
     private final Object mSerializedFontMapLock = new Object();
@@ -322,10 +434,12 @@ public final class FontManagerService extends IFontManager.Stub {
             Context context, boolean safeMode, CompletableFuture<Void> serviceStarted) {
         if (safeMode) {
             Slog.i(TAG, "Entering safe mode. Deleting all font updates.");
-            UpdatableFontDir.deleteAllFiles(new File(FONT_FILES_DIR), new File(CONFIG_XML_FILE));
+            UpdatableFontDir.deleteAllFiles(new File(FONT_FILES_DIR), new File(CONFIG_XML_FILE),
+                    new File(EMOJI_DIR));
         }
         mContext = context;
         mIsSafeMode = safeMode;
+        mAppEmojiReplacer = new AppEmojiReplacer(context);
 
         if (Flags.useOptimizedBoottimeFontLoading()) {
             Slog.i(TAG, "Using optimized boot-time font loading.");
@@ -362,11 +476,9 @@ public final class FontManagerService extends IFontManager.Stub {
     private UpdatableFontDir createUpdatableFontDir() {
         // Never read updatable font files in safe mode.
         if (mIsSafeMode) return null;
-        
-        if (!axFontFeatureSupport) {
-            // If apk verity is supported, fs-verity should be available.
-            if (!VerityUtils.isFsVeritySupported()) return null;
-        }
+        // Shipping API level is only a proxy. Kernels for devices that shipped before R can
+        // still implement fs-verity, so check the filesystem that will store the font.
+        if (!isFontDirFsverityAvailable()) return null;
 
         String[] certs = mContext.getResources().getStringArray(
                 R.array.config_fontManagerServiceCerts);
@@ -379,7 +491,88 @@ public final class FontManagerService extends IFontManager.Stub {
         }
 
         return new UpdatableFontDir(new File(FONT_FILES_DIR), new OtfFontFileParser(),
-                new FsverityUtilImpl(certs), new File(CONFIG_XML_FILE));
+                new FsverityUtilImpl(certs), new File(CONFIG_XML_FILE), new File(EMOJI_DIR));
+    }
+
+    /**
+     * Boot may have run before the font directory was available. Tries again, and returns
+     * whether {@link #mUpdatableFontDir} can be used.
+     */
+    @GuardedBy("mUpdatableFontDirLock")
+    private boolean ensureUpdatableFontDirLocked() {
+        if (mUpdatableFontDir == null) {
+            mUpdatableFontDir = createUpdatableFontDir();
+            if (mUpdatableFontDir != null) {
+                mUpdatableFontDir.loadFontFileMap();
+            }
+        }
+        return mUpdatableFontDir != null;
+    }
+
+    @GuardedBy("mUpdatableFontDirLock")
+    private boolean isFontDirFsverityAvailable() {
+        if (VerityUtils.isFsVeritySupported()) return true;
+        if (mFontDirFsverityAvailable != null) return mFontDirFsverityAvailable;
+
+        Boolean probed = probeFontDirFsverity();
+        if (probed != null) {
+            mFontDirFsverityAvailable = probed;
+            Slog.i(TAG, "fs-verity on " + FONT_FILES_DIR + " is "
+                    + (probed ? "supported" : "not supported"));
+        }
+        return Boolean.TRUE.equals(probed);
+    }
+
+    /**
+     * Enables fs-verity on a throwaway file in the font directory.
+     *
+     * @return {@code TRUE} or {@code FALSE} when support is known, or {@code null} when the
+     *         directory could not be tested
+     */
+    @Nullable
+    private static Boolean probeFontDirFsverity() {
+        File dir = new File(FONT_FILES_DIR);
+        if (!dir.isDirectory() && !dir.mkdirs()) {
+            Slog.w(TAG, "Font directory is not available for fs-verity probe: " + dir);
+            return null;
+        }
+        if (!deleteFsverityProbes(dir)) return null;
+
+        File probe = null;
+        try {
+            probe = File.createTempFile(FSVERITY_PROBE_PREFIX, null, dir);
+            int errno = VerityUtils.enableFsverity(probe.getAbsolutePath());
+            if (errno == 0) {
+                return deleteFsverityProbes(dir) ? Boolean.TRUE : null;
+            }
+            if (errno == OsConstants.EOPNOTSUPP || errno == OsConstants.ENOTTY
+                    || errno == OsConstants.ENOSYS) {
+                Slog.i(TAG, "fs-verity is not supported on " + dir + ": " + Os.strerror(errno));
+                deleteFsverityProbes(dir);
+                return Boolean.FALSE;
+            }
+            Slog.w(TAG, "fs-verity probe failed on " + dir + ": " + Os.strerror(errno));
+            deleteFsverityProbes(dir);
+            return null;
+        } catch (IOException e) {
+            Slog.w(TAG, "Unable to probe fs-verity in " + dir, e);
+            if (probe != null) deleteFsverityProbes(dir);
+            return null;
+        }
+    }
+
+    /** Returns whether every probe file was removed. A leftover aborts font loading. */
+    private static boolean deleteFsverityProbes(File dir) {
+        File[] probes = dir.listFiles((unused, name) -> name.startsWith(FSVERITY_PROBE_PREFIX));
+        if (probes == null) return false;
+        boolean removed = true;
+        for (File probe : probes) {
+            if (probe.exists() && !probe.delete()) {
+                Slog.w(TAG, "Failed to delete fs-verity probe " + probe);
+                removed = false;
+            }
+        }
+        return removed;
     }
 
     /**
@@ -458,13 +651,9 @@ public final class FontManagerService extends IFontManager.Stub {
      * <p>CAUTION: this method is not safe. Existing processes may crash due to missing font files.
      * This method is only for {@link FontManagerShellCommand}.
      */
-    @android.annotation.EnforcePermission(android.Manifest.permission.UPDATE_FONTS)
-    @RequiresPermission(Manifest.permission.UPDATE_FONTS)
-    @Override
-    public void clearUpdates() {
-        getContext().enforceCallingOrSelfPermission(
-                android.Manifest.permission.UPDATE_FONTS, "clearUpdates");
-        UpdatableFontDir.deleteAllFiles(new File(FONT_FILES_DIR), new File(CONFIG_XML_FILE));
+    /* package */ void clearUpdates() {
+        UpdatableFontDir.deleteAllFiles(new File(FONT_FILES_DIR), new File(CONFIG_XML_FILE),
+                new File(EMOJI_DIR));
         initialize();
     }
 

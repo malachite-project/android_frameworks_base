@@ -5549,6 +5549,13 @@ public final class Settings {
         public static final String SCREEN_OFF_TIMEOUT = "screen_off_timeout";
 
         /**
+         * The amount of time in milliseconds before the lock screen display times out.
+         * If unset or non-positive, SystemUI uses the device's configured default.
+         * @hide
+         */
+        public static final String LOCKSCREEN_DISPLAY_TIMEOUT = "lockscreen_display_timeout";
+
+        /**
          * The screen backlight brightness between 1 (minimum) and 255 (maximum).
          *
          * Use {@link android.view.WindowManager.LayoutParams#screenBrightness} to set the screen
@@ -6988,6 +6995,14 @@ public final class Settings {
         public static final String HIDE_STATUS_BAR_IN_SCREENSHOT = "hide_status_bar_in_screenshot";
 
         /**
+         * Whether system dialogs and toasts should use background blur.
+         *   0 = disabled
+         *   1 = enabled (default)
+         * @hide
+         */
+        public static final String DIALOG_BLUR_ENABLED = "dialog_blur_enabled";
+
+        /**
          * Whether allowing pocket service to register sensors and dispatch informations.
          *   0 = disabled
          *   1 = enabled
@@ -7133,6 +7148,54 @@ public final class Settings {
          * @hide
          */
         public static final String SHOW_APP_VOLUME = "show_app_volume";
+
+        /**
+         * Override max volume for {@link android.media.AudioSystem.STREAM_VOICE_CALL}
+         * see {@link com.android.server.audio.AudioService} for defaults in priority
+         * -1 = disabled
+         * @hide
+         */
+        public static final String MAX_CALL_VOLUME = "max_call_volume";
+
+        /**
+         * Stores the default max volume for {@link android.media.AudioSystem.STREAM_VOICE_CALL}
+         * see {@link com.android.server.audio.AudioService} for defaults in priority
+         * Used as a fallback for the user settings
+         * @hide
+         */
+        public static final String DEFAULT_MAX_CALL_VOLUME = "default_max_call_volume";
+
+        /**
+         * Override max volume for {@link android.media.AudioSystem.STREAM_MUSIC}
+         * see {@link com.android.server.audio.AudioService} for defaults in priority
+         * -1 = disabled
+         * @hide
+         */
+        public static final String MAX_MUSIC_VOLUME = "max_music_volume";
+
+        /**
+         * Stores the default max volume for {@link android.media.AudioSystem.STREAM_MUSIC}
+         * see {@link com.android.server.audio.AudioService} for defaults in priority
+         * Used as a fallback for the user settings
+         * @hide
+         */
+        public static final String DEFAULT_MAX_MUSIC_VOLUME = "default_max_music_volume";
+
+        /**
+         * Override max volume for {@link android.media.AudioSystem.STREAM_ALARM}
+         * see {@link com.android.server.audio.AudioService} for defaults in priority
+         * -1 = disabled
+         * @hide
+         */
+        public static final String MAX_ALARM_VOLUME = "max_alarm_volume";
+
+        /**
+         * Stores the default max volume for {@link android.media.AudioSystem.STREAM_ALARM}
+         * see {@link com.android.server.audio.AudioService} for defaults in priority
+         * Used as a fallback for the user settings
+         * @hide
+         */
+        public static final String DEFAULT_MAX_ALARM_VOLUME = "default_max_alarm_volume";
 
         /**
          * Whether the phone vibrates on call connect
@@ -7291,12 +7354,6 @@ public final class Settings {
         public static final String STATUS_BAR_TRIPLE_TAP_FREEFORM = "status_bar_triple_tap_freeform";
 
         /**
-         * Whether to enable the ripple animation on fingerprint unlock
-         * @hide
-         */
-        public static final String ENABLE_RIPPLE_EFFECT = "enable_ripple_effect";
-
-        /**
          * Whether to vibrate on succesful fingerprint authentication
          * @hide
          */
@@ -7400,6 +7457,14 @@ public final class Settings {
          * @hide
          */
         public static final String STATUSBAR_CLOCK_CHIP = "statusbar_clock_chip";
+
+        /**
+         * Clock chip gradient color mode
+         * 0 - auto, follow the accent palette (default)
+         * 1 - custom, use the picked start/end colors
+         * @hide
+         */
+        public static final String STATUSBAR_CLOCK_CHIP_GRADIENT_COLOR_MODE = "statusbar_clock_chip_gradient_color_mode";
 
         /**
          * Clock chip custom gradient – start
@@ -7561,10 +7626,35 @@ public final class Settings {
         public static final String STATUS_BAR_CUSTOM_HEADER_HEIGHT = "status_bar_custom_header_height";
 
         /**
+         * Header zoom as a percentage, from 100 to 400.
+         * @hide
+         */
+        public static final String STATUS_BAR_CUSTOM_HEADER_ZOOM = "status_bar_custom_header_zoom";
+
+        /**
+         * Horizontal crop position from 0 (left) to 1000 (right), default 500.
+         * @hide
+         */
+        public static final String STATUS_BAR_CUSTOM_HEADER_POSITION_X = "status_bar_custom_header_position_x";
+
+        /**
+         * Vertical crop position from 0 (top) to 1000 (bottom), default 500.
+         * @hide
+         */
+        public static final String STATUS_BAR_CUSTOM_HEADER_POSITION_Y = "status_bar_custom_header_position_y";
+
+        /**
          * Whether edge light is enabled
          * @hide
          */
         public static final String EDGE_LIGHT_ENABLED = "edge_light_enabled";
+
+        /**
+         * Edge light display mode: 0 = lockscreen/ambient/AOD (default),
+         * 1 = unlocked device (homescreen and apps), 2 = both locked and unlocked.
+         * @hide
+         */
+        public static final String EDGE_LIGHT_DISPLAY_MODE = "edge_light_display_mode";
 
         /**
          * Color mode of edge light
@@ -7609,10 +7699,31 @@ public final class Settings {
         public static final String EDGE_LIGHT_INTENSITY = "edge_light_intensity";
 
         /**
+         * Whether edge light should only trigger on unlock (not on notifications)
+         * @hide
+         */
+        public static final String EDGE_LIGHT_TRIGGER_UNLOCK_ONLY = "edge_light_trigger_unlock_only";
+
+        /**
          * Edge light animation effect type
          * @hide
          */
         public static final String EDGE_LIGHT_ANIMATION_EFFECT = "edge_light_animation_effect";
+
+        /** @hide */
+        public static final String EDGE_LIGHT_ANIMATION_SPEED = "edge_light_animation_speed";
+
+        /** @hide */
+        public static final String EDGE_LIGHT_DESIGN_LENGTH = "edge_light_design_length";
+
+        /** @hide */
+        public static final String EDGE_LIGHT_DESIGN_SIZE = "edge_light_design_size";
+
+        /** @hide */
+        public static final String EDGE_LIGHT_DESIGN_DENSITY = "edge_light_design_density";
+
+        /** @hide */
+        public static final String EDGE_LIGHT_ANIMATION_DIRECTION = "edge_light_animation_direction";
 
         /**
          * Use doubletap as doze pulse triggers
@@ -7913,6 +8024,14 @@ public final class Settings {
          * @hide
          */
         public static final String CUSTOM_GRADIENT_END_COLOR = "custom_gradient_end_color";
+
+        /**
+         * Gradient angle in degrees (0 - 360), counter-clockwise.
+         * 0 = start -> end (left -> right on tiles and buttons, along the fill direction
+         * on sliders), rotated counter-clockwise from there
+         * @hide
+         */
+        public static final String CUSTOM_GRADIENT_ANGLE = "custom_gradient_angle";
 
         /**
          * Whether to play notification sound and vibration if screen is ON
@@ -14857,6 +14976,14 @@ public final class Settings {
         public static final String PI_TENSOR_SPOOF = "pi_tensor_spoof";
 
         /**
+         * Wall-clock deadline (epoch millis) for a timed Tensor spoof session, or 0 when the
+         * spoof stays on until it is switched off.
+         * @hide
+         */
+        @Readable
+        public static final String PI_TENSOR_SPOOF_EXPIRES_AT = "pi_tensor_spoof_expires_at";
+
+        /**
          * Whether to use PIF spoof for Play store
          * @hide
          */
@@ -15013,18 +15140,6 @@ public final class Settings {
         public static final String SMART_PIXEL_FILTER_PERCENT = "smart_pixel_filter_percent";
 
         /**
-         * Whether to use system accent color for lock screen clock text
-         * @hide
-         */
-        public static final String CLOCK_TEXT_ACCENT_COLOR = "clock_text_accent_color";
-
-        /**
-         * Lock screen clock text opacity (0-100)
-         * @hide
-         */
-        public static final String CLOCK_TEXT_OPACITY = "clock_text_opacity";
-
-        /**
          * @hide
          */
         public static final String LOCK_SCREEN_CUSTOM_CLOCK_STYLE = "lock_screen_custom_clock_style";
@@ -15160,6 +15275,51 @@ public final class Settings {
          * @hide
          */
         public static final String BATTERY_SAVER_DARK_THEME = "battery_saver_dark_theme";
+
+        /**
+         * Whether the Dynamic Bar is enabled
+         * @hide
+         */
+        public static final String AX_DYNAMIC_BAR_ENABLED = "ax_dynamic_bar_enabled";
+
+        /**
+         * JSON array of Dynamic Bar event types that are disabled
+         * @hide
+         */
+        public static final String AX_DYNAMIC_BAR_EVENTS = "ax_dynamic_bar_events";
+
+        /**
+         * Whether the Dynamic Bar chip is shown on the lock screen
+         * @hide
+         */
+        public static final String AX_DYNAMIC_BAR_KEYGUARD_ENABLED =
+                "ax_dynamic_bar_keyguard_enabled";
+
+        /**
+         * Battery info mode of the Dynamic Bar chip on the lock screen
+         * @hide
+         */
+        public static final String AX_DYNAMIC_BAR_KEYGUARD_BATTERY_CHIP_MODE =
+                "ax_dynamic_bar_keyguard_battery_chip_mode";
+
+        /**
+         * Whether Dynamic Bar notifications are shown as a compact chip first
+         * @hide
+         */
+        public static final String AX_DYNAMIC_BAR_COMPACT_NOTIFICATIONS =
+                "ax_dynamic_bar_compact_notifications";
+
+        /**
+         * Whether tapping the Dynamic Bar chip performs haptic feedback
+         * @hide
+         */
+        public static final String AX_DYNAMIC_BAR_HAPTICS = "ax_dynamic_bar_haptics";
+
+        /**
+         * Whether the Dynamic Bar chip morphs into its expanded panel
+         * @hide
+         */
+        public static final String AX_DYNAMIC_BAR_CHIP_MORPH = "ax_dynamic_bar_chip_morph";
 
         /**
          * Keys we no longer back up under the current schema, but want to continue to

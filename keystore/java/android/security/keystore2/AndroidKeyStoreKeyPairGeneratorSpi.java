@@ -831,9 +831,12 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
             // Only attested, standard RSA/EC keys are eligible. Ordinary keys,
             // StrongBox keys, Curve25519 keys (XDH/Ed25519 normalize to EC but a
             // plain EC software keypair generator cannot express them),
-            // attest-key-rooted chains and internal hardware probes must follow
-            // the stock Keystore path.
+            // attest-key-rooted chains, internal hardware probes and oversized
+            // challenges must follow the stock Keystore path, so the app gets the
+            // same answer as without TrickyStore.
             final boolean eligible = mSpec.getAttestationChallenge() != null
+                    && mSpec.getAttestationChallenge().length
+                        <= MAX_ATTESTATION_CHALLENGE_SIZE_BYTES
                     && !mSpec.isStrongBoxBacked()
                     && (mKeymasterAlgorithm == KeymasterDefs.KM_ALGORITHM_EC
                         || mKeymasterAlgorithm == KeymasterDefs.KM_ALGORITHM_RSA)
@@ -866,9 +869,29 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
                         descriptor, iSecurityLevel, securityLevel, flags,
                         requesterUid, packages);
             } else {
-                metadata = iSecurityLevel.generateKey(descriptor,
-                        mAttestKeyDescriptor,
-                        constructKeyGenerationArguments(), flags, additionalEntropy);
+                try {
+                    metadata = iSecurityLevel.generateKey(descriptor,
+                            mAttestKeyDescriptor,
+                            constructKeyGenerationArguments(), flags, additionalEntropy);
+                } catch (KeyStoreException e) {
+                    // Leaf hack needs a TEE certificate. This device either has no
+                    // attestation key, or KeyMint rejects the spoofed device ids
+                    // (CANNOT_ATTEST_IDS) before it looks for one. A healthy TEE
+                    // probe is also cached for the life of the process, so the
+                    // request would keep failing. Generate the chain instead.
+                    int error = e.getErrorCode();
+                    if ((error != KeymasterDefs.KM_ERROR_ATTESTATION_KEYS_NOT_PROVISIONED
+                            && error != KeymasterDefs.KM_ERROR_CANNOT_ATTEST_IDS)
+                            || !eligible || !canSoftwareAttest(packages)) {
+                        throw e;
+                    }
+                    Log.w(TAG, "KeyMint cannot attest (" + error
+                            + "); generating a certificate for " + mEntryAlias);
+                    TrickyStoreService.getInstance().noteAttestationKeysMissing();
+                    metadata = buildSoftwareAttestedKey(
+                            descriptor, iSecurityLevel, securityLevel, flags,
+                            requesterUid, packages);
+                }
             }
 
             AndroidKeyStorePublicKey publicKey =
@@ -904,6 +927,29 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
                     }
                 }
             }
+        }
+    }
+
+    private boolean canSoftwareAttest(String[] packages) {
+        try {
+            if (packages == null) {
+                packages = ActivityThread.getPackageManager()
+                        .getPackagesForUid(Process.myUid());
+            }
+            if (packages == null) return false;
+            TrickyStoreService service = TrickyStoreService.getInstance();
+            if (!service.hasKeyboxes()) {
+                service.refreshKeyBox();
+            }
+            if (!service.hasKeyboxes()) return false;
+            // needHack/needGenerate follow the TEE probe. That probe can come
+            // back healthy while KeyMint still rejects the device ids, and the
+            // storage key would then be thrown away. A targeted package with a
+            // keybox can take a generated chain either way.
+            return service.isAttestationTarget(Process.myUid(), packages);
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to check software attestation fallback", e);
+            return false;
         }
     }
 

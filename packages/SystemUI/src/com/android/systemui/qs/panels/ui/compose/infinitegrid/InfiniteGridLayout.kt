@@ -16,6 +16,8 @@
 
 package com.android.systemui.qs.panels.ui.compose.infinitegrid
 
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -27,8 +29,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.toMutableStateList
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.dimensionResource
 import androidx.compose.ui.unit.Dp
@@ -45,12 +49,23 @@ import com.android.systemui.grid.ui.compose.VerticalSpannedGrid
 import com.android.systemui.grid.ui.compose.calculate2DPlacements
 import com.android.systemui.haptics.msdl.qs.TileHapticsViewModel
 import com.android.systemui.lifecycle.rememberViewModel
+import com.android.systemui.media.remedia.ui.compose.QsMediaTile
+import com.android.systemui.media.remedia.ui.viewmodel.MediaViewModel
+import com.android.systemui.qs.panels.shared.model.LocalQsStyle
+import com.android.systemui.qs.panels.shared.model.LocalQsTweaks
+import com.android.systemui.qs.panels.shared.model.QsMediaTileSize
 import com.android.systemui.qs.panels.shared.model.SizedTileImpl
+import com.android.systemui.qs.panels.shared.model.cellsOf
+import com.android.systemui.qs.panels.shared.model.isBeside
+import com.android.systemui.qs.panels.shared.model.packTiles
+import com.android.systemui.qs.panels.shared.model.remixColumns
 import com.android.systemui.qs.panels.ui.compose.BounceableInfo
 import com.android.systemui.qs.panels.ui.compose.EditTileListState
 import com.android.systemui.qs.panels.ui.compose.PaginatableGridLayout
 import com.android.systemui.qs.panels.ui.compose.TileListener
 import com.android.systemui.qs.panels.ui.compose.bounceableInfo
+import com.android.systemui.qs.panels.ui.compose.qsTileColumnSpacing
+import com.android.systemui.qs.panels.ui.compose.qsTileRowSpacing
 import com.android.systemui.qs.panels.ui.viewmodel.BounceableTileViewModel
 import com.android.systemui.qs.panels.ui.viewmodel.DetailsViewModel
 import com.android.systemui.qs.panels.ui.viewmodel.EditTileViewModel
@@ -116,6 +131,7 @@ constructor(
     private val textFeedbackContentViewModelFactory: TextFeedbackContentViewModel.Factory,
     private val tileHapticsViewModelFactory: TileHapticsViewModel.Factory,
     private val connectedBluetoothDevicesInteractor: ConnectedBluetoothDevicesInteractor,
+    private val mediaViewModelFactory: MediaViewModel.Factory,
 ) : PaginatableGridLayout {
 
     @Composable
@@ -136,16 +152,41 @@ constructor(
                 textFeedbackContentViewModelFactory.create(context)
             }
 
-        val columns = viewModel.columnsWithMediaViewModel.columns
+        val colorOSStyle = LocalColorOSQsStyle.current
+        // The ColorOS panel is built on four columns, like its pills, media card and sliders, and
+        // the pager cuts its pages for four. Wide screens ask for 6 columns, which squashed the
+        // round tiles into narrow ovals.
+        // The Remix styles change the number of columns, and some make every tile one column.
+        val remixStyle = LocalRemixQsStyle.current
+        val columns =
+            if (colorOSStyle) ColorOSGridColumns
+            else if (remixStyle) {
+                LocalQsTweaks.current.remixColumns(
+                    LocalQsStyle.current,
+                    viewModel.columnsWithMediaViewModel.columns,
+                )
+            } else viewModel.columnsWithMediaViewModel.columns
         val largeTilesSpan = viewModel.columnsWithMediaViewModel.largeSpan
         val largeTiles by viewModel.iconTilesViewModel.largeTilesState
-        val colorOSStyle = LocalColorOSQsStyle.current
         val nothingStyle = LocalNothingQsStyle.current
 
         if (nothingStyle) {
             NothingTileGrid(
-                tiles = tiles,
+                pageTiles = tiles,
                 largeTiles = largeTiles,
+                viewModel = viewModel,
+                textFeedbackViewModel = textFeedbackViewModel,
+                modifier = modifier,
+                listening = listening,
+                enableRevealEffect = enableRevealEffect,
+            )
+            return
+        }
+
+        if (remixStyle && !colorOSStyle) {
+            RemixTileGrid(
+                tiles = tiles,
+                columns = columns,
                 viewModel = viewModel,
                 textFeedbackViewModel = textFeedbackViewModel,
                 modifier = modifier,
@@ -157,7 +198,13 @@ constructor(
 
         // Tiles or largeTiles may be updated while this is composed, so listen to any changes
         val sizedTiles =
-            remember(tiles, largeTiles, largeTilesSpan, colorOSStyle) {
+            remember(
+                tiles,
+                largeTiles,
+                largeTilesSpan,
+                colorOSStyle,
+                columns,
+            ) {
                 // ColorOS style: the fixed wide tiles (Wi-Fi, mobile data, Bluetooth) are drawn
                 // separately by the ColorOS layout, so every tile in this grid is a round icon
                 // tile.
@@ -177,14 +224,14 @@ constructor(
         val spans by remember(sizedTiles) { derivedStateOf { sizedTiles.fastMap { it.width } } }
         VerticalSpannedGrid(
             columns = columns,
-            columnSpacing =
-                if (colorOSStyle) ColorOSGap
-                else dimensionResource(R.dimen.qs_tile_margin_horizontal),
+            columnSpacing = if (colorOSStyle) ColorOSGap else qsTileColumnSpacing(columns),
             rowSpacing =
                 if (colorOSStyle) colorOSIconRowGap(labelsHidden)
-                else dimensionResource(R.dimen.qs_tile_margin_vertical),
+                else qsTileRowSpacing(columns, classicStyle),
             spans = spans,
             keys = { sizedTiles[it].tile.spec },
+            // Center compact tiles on the same row as taller large tiles.
+            verticalAlignment = Alignment.CenterVertically,
             modifier = modifier,
         ) { spanIndex, column, isFirstInColumn, isLastInColumn ->
             val it = sizedTiles[spanIndex]
@@ -207,6 +254,12 @@ constructor(
                             columns = columns,
                             isFirstInRow = isFirstInColumn,
                             isLastInRow = isLastInColumn,
+                            // Compact tiles bounce their content instead of their container.
+                            bouncesContainer = { index ->
+                                colorOSStyle ||
+                                    !(classicStyle ||
+                                        iconTilesViewModel.isIconTile(sizedTiles[index].tile.spec))
+                            },
                         ),
                     detailsViewModel = detailsViewModel,
                     isVisible = listening,
@@ -220,12 +273,112 @@ constructor(
     }
 
     /**
+     * Remix style: places the tiles of a page on a grid of cells. The player takes the cells of its
+     * size, and a look that makes every tile one column draws only icon tiles.
+     */
+    @Composable
+    private fun ContentScope.RemixTileGrid(
+        tiles: List<TileViewModel>,
+        columns: Int,
+        viewModel: InfiniteGridViewModel,
+        textFeedbackViewModel: TextFeedbackContentViewModel,
+        modifier: Modifier,
+        listening: () -> Boolean,
+        enableRevealEffect: Boolean,
+    ) {
+        val tweaks = LocalQsTweaks.current
+        val theme = LocalQsStyle.current
+        val largeTilesSpan = viewModel.columnsWithMediaViewModel.largeSpan
+        val largeTiles by viewModel.iconTilesViewModel.largeTilesState
+        val tileHeight = tileLook(tileShapeStyle()).height
+        val mediaTileSize = tweaks.mediaSize ?: QsMediaTileSize.SQUARE
+        val placements =
+            remember(tiles, tweaks, theme, largeTiles, largeTilesSpan, columns) {
+                packTiles(
+                    tiles.map {
+                        tweaks.cellsOf(
+                            spec = it.spec.spec,
+                            theme = theme,
+                            isLarge = largeTiles.contains(it.spec),
+                            largeSpan = largeTilesSpan,
+                            columns = columns,
+                        )
+                    },
+                    columns,
+                )
+            }
+        val squishiness by viewModel.squishinessViewModel.squishiness.collectAsStateWithLifecycle()
+        val scope = rememberCoroutineScope()
+        val classicStyle = rememberQSPanelStyle()
+        val columnSpacing = tweaks.spacing?.dp ?: qsTileColumnSpacing(columns)
+        val rowSpacing = tweaks.spacing?.dp ?: qsTileRowSpacing(columns, classicStyle)
+        val rowGap = with(LocalDensity.current) { rowSpacing.roundToPx() }
+
+        val bounceables = remember(tiles) { List(tiles.size) { BounceableTileViewModel() } }
+        TilePlacementGrid(
+            placements = placements,
+            columns = columns,
+            columnSpacing = columnSpacing,
+            rowSpacing = rowSpacing,
+            keys = { tiles[it].spec },
+            modifier = modifier,
+        ) { index ->
+            val tile = tiles[index]
+            val place = placements[index]
+            Element(tile.spec.toElementKey(), Modifier) {
+                if (tile.spec.spec == QsMediaTileSize.TILE_SPEC) {
+                    QsMediaTile(
+                        viewModelFactory = mediaViewModelFactory,
+                        size = mediaTileSize,
+                        modifier =
+                            Modifier.fillMaxWidth()
+                                .height(tileHeight * place.rows + rowSpacing * (place.rows - 1)),
+                        squishGaps = { rowGap * (place.rows - 1) },
+                        squishiness = { squishiness },
+                    )
+                } else {
+                    Tile(
+                        tile = tile,
+                        iconOnly = place.columns == 1,
+                        squishiness = { squishiness },
+                        tileHapticsViewModelFactory = tileHapticsViewModelFactory,
+                        coroutineScope = scope,
+                        bounceableInfo =
+                            bounceables.bounceableInfo(
+                                SizedTileImpl(tile, place.columns),
+                                index = index,
+                                column = place.column,
+                                columns = columns,
+                                isFirstInRow = !placements.isBeside(index, index - 1),
+                                isLastInRow = !placements.isBeside(index, index + 1),
+                                // Icon tiles bounce their content instead of their container, and
+                                // the player does not bounce.
+                                bouncesContainer = { other ->
+                                    placements[other].columns > 1 &&
+                                        tiles[other].spec.spec != QsMediaTileSize.TILE_SPEC
+                                },
+                            ),
+                        detailsViewModel = detailsViewModel,
+                        isVisible = listening,
+                        requestToggleTextFeedback = textFeedbackViewModel::requestShowFeedback,
+                        enableRevealEffect = enableRevealEffect,
+                        rows = place.rows,
+                        height = tileHeight * place.rows + rowSpacing * (place.rows - 1),
+                    )
+                }
+            }
+        }
+
+        TileListener(tiles, listening)
+    }
+
+    /**
      * Nothing style: places the tiles of a page on a 4 column grid of square cells. A tile is a
      * circle (1x1), a pill (2x1) or a quad (2x2), at the saved row and column when it has one.
      */
     @Composable
     private fun ContentScope.NothingTileGrid(
-        tiles: List<TileViewModel>,
+        pageTiles: List<TileViewModel>,
         largeTiles: Set<TileSpec>,
         viewModel: com.android.systemui.qs.panels.ui.viewmodel.InfiniteGridViewModel,
         textFeedbackViewModel: TextFeedbackContentViewModel,
@@ -236,7 +389,19 @@ constructor(
         val squishiness by viewModel.squishinessViewModel.squishiness.collectAsStateWithLifecycle()
         val scope = rememberCoroutineScope()
         val nothingLayout = rememberNothingLayout()
-        val (quadTiles, tileLayout) = nothingLayout
+        val columns = rememberNothingQSColumns()
+        val (quadTiles, savedTileLayout) = nothingLayout
+        val tileLayout = savedTileLayout.forNothingColumns(columns)
+        val pagePlacements = LocalNothingPagePlacements.current
+        // A pager already ordered the tiles of its pages, a lone grid orders its own.
+        val tiles =
+            remember(pageTiles, savedTileLayout, columns, pagePlacements) {
+                if (pagePlacements == null) {
+                    pageTiles.inNothingLayoutOrder(savedTileLayout, columns) { it.spec }
+                } else {
+                    pageTiles
+                }
+            }
         val noBounce = remember { BounceableInfo(BounceableTileViewModel(), null, null, false) }
         // Sliders are drawn by the host. Without a pager the first page is the only one.
         val sliderContent = LocalNothingSliderContent.current
@@ -245,7 +410,7 @@ constructor(
                 emptyList()
             } else {
                 LocalNothingPageSliders.current
-                    ?: nothingLayout.sliders.filter { it.row < NOTHING_ROWS }
+                    ?: nothingLayout.sliders.forNothingColumns(columns).filter { it.row < NOTHING_ROWS }
             }
         val sliderRowHeight = dimensionResource(R.dimen.qs_nothing_brightness_slider_height)
         val sliderRowHeights =
@@ -263,7 +428,6 @@ constructor(
                     }
                 }
             }
-        val pagePlacements = LocalNothingPagePlacements.current
         val preferredPlacements =
             remember(tiles, tileLayout, pagePlacements) {
                 tiles
@@ -284,18 +448,19 @@ constructor(
                 }
             }
         val placements =
-            remember(nothingSpans, preferredPlacements, sliderPlacements) {
+            remember(nothingSpans, preferredPlacements, sliderPlacements, columns) {
                 calculate2DPlacements(
                     nothingSpans,
-                    NOTHING_COLUMNS,
+                    columns,
                     maxRows = NOTHING_ROWS,
                     preferredPlacements = preferredPlacements,
                     reserved = sliderPlacements,
+                    fillGaps = isNothingReflow(columns),
                 ) + sliderPlacements
             }
 
         TwoDimensionalSpannedGrid(
-            columns = NOTHING_COLUMNS,
+            columns = columns,
             columnSpacing = NOTHING_SPACING,
             rowSpacing = NOTHING_SPACING,
             customPlacements = placements,
@@ -530,6 +695,5 @@ constructor(
     }
 }
 
-private const val NOTHING_COLUMNS = 4
 private const val NOTHING_ROWS = 4
 private val NOTHING_SPACING = 16.dp

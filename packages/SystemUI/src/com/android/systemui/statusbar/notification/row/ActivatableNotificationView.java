@@ -30,6 +30,7 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Point;
+import android.os.Looper;
 import android.util.AttributeSet;
 import android.util.IndentingPrintWriter;
 import android.util.MathUtils;
@@ -216,7 +217,17 @@ public abstract class ActivatableNotificationView extends ExpandableOutlineView 
      */
     protected void initBackground() {
         mBackgroundNormal.setCustomBackground(R.drawable.notification_material_bg);
-        mBackgroundNormal.setBlurBackgroundEnabled(usesBlurredBackground());
+        updateBlurBackground();
+    }
+
+    private void updateBlurBackground() {
+        if (Looper.getMainLooper().isCurrentThread()) {
+            mBackgroundNormal.setBlurBackgroundEnabled(usesBlurredBackground());
+        } else {
+            // Rows are inflated on the NotifInflation thread, but the blur setup must run on the
+            // UI thread; the posted action runs once the row is attached.
+            post(this::updateBlurBackground);
+        }
     }
 
     protected boolean hideBackground() {
@@ -377,7 +388,7 @@ public abstract class ActivatableNotificationView extends ExpandableOutlineView 
     }
 
     protected boolean usesBlurredBackground() {
-        return usesTransparentBackground() && lockscreenBlurForNotifications();
+        return mOnKeyguard && usesTransparentBackground() && lockscreenBlurForNotifications();
     }
 
     protected boolean usesTransparentBackground() {
@@ -886,7 +897,34 @@ public abstract class ActivatableNotificationView extends ExpandableOutlineView 
         mBackgroundNormal.setOnKeyguard(mOnKeyguard);
         if (mIsBlurSupported) {
             updateBackgroundTint();
+            mBackgroundNormal.setBlurBackgroundEnabled(usesBlurredBackground());
         }
+    }
+
+    @Override
+    public void setInShelf(boolean inShelf) {
+        super.setInShelf(inShelf);
+        if (mBackgroundNormal != null) {
+            mBackgroundNormal.setBlurHiddenInShelf(inShelf);
+        }
+    }
+
+    @Override
+    public void setAlpha(float alpha) {
+        super.setAlpha(alpha);
+        if (mBackgroundNormal != null) {
+            mBackgroundNormal.setBlurViewAlpha(alpha);
+        }
+    }
+
+    /** Fades this row's background blur region with the stack, see {@link NotificationBackgroundView#setBlurRegionFade}. */
+    public void setBlurRegionFade(float fade) {
+        mBackgroundNormal.setBlurRegionFade(fade);
+    }
+
+    /** Suppresses/restores this row's background blur region while the stack is faded out. */
+    public void setBlurRegionSuppressed(boolean suppressed) {
+        mBackgroundNormal.setBlurRegionSuppressed(suppressed);
     }
 
     /**

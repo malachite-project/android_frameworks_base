@@ -46,9 +46,11 @@ import androidx.compose.foundation.layout.Arrangement.spacedBy
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -79,6 +81,7 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.stringResource
@@ -90,7 +93,9 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.res.dimensionResource
+import androidx.compose.ui.res.integerResource
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.trace
 import com.android.app.tracing.coroutines.launchTraced as launch
@@ -108,12 +113,12 @@ import com.android.systemui.animation.Expandable
 import com.android.systemui.animation.TransitionAnimator.Companion.dynamicTargetResolutionEnabled
 import com.android.systemui.common.shared.model.Icon
 import com.android.systemui.compose.modifiers.sysuiResTag
-import com.android.systemui.gradient.diagonal
-import com.android.systemui.gradient.rememberGradientColors
-import com.android.systemui.gradient.rememberGradientEnabled
+import com.android.systemui.gradient.brush
+import com.android.systemui.gradient.rememberGradient
 import com.android.systemui.haptics.msdl.qs.TileHapticsViewModel
 import com.android.systemui.lifecycle.rememberViewModel
 import com.android.systemui.qs.flags.QsDetailedView
+import com.android.systemui.qs.panels.shared.model.QsPanelStyle
 import com.android.systemui.qs.panels.ui.compose.BounceableInfo
 import com.android.systemui.qs.panels.ui.compose.Tooltip
 import com.android.systemui.qs.panels.ui.compose.infinitegrid.CommonTileDefaults.ActiveIconCornerRadius
@@ -144,13 +149,8 @@ import kotlinx.coroutines.flow.callbackFlow
 import platform.test.motion.compose.values.MotionTestValueKey
 import platform.test.motion.compose.values.motionTestValues
 
-private val TileViewModel.traceName
+internal val TileViewModel.traceName
     get() = spec.toString().takeLast(Trace.MAX_SECTION_NAME_LEN)
-
-/** Values of [Settings.System.QS_PANEL_STYLE]; 0 is the default card style. */
-private const val QS_PANEL_STYLE_CLASSIC = 1
-private const val QS_PANEL_STYLE_COLOROS = 2
-private const val QS_PANEL_STYLE_NOTHING = 3
 
 /** Nothing-style Quick Settings (monochrome pills, circles and 2x2 quad tiles on a 4 column grid). */
 internal val LocalNothingQsStyle = compositionLocalOf { false }
@@ -178,7 +178,10 @@ private val COLOROS_DATA_TILES = setOf("cell", "mobile_data", "mobiledata")
 private val COLOROS_WIFI_TILES = setOf("wifi")
 
 /** How much of a round tile that cannot be used is left, the whole tile fades, glass included. */
-private const val ColorOSUnavailableAlpha = 0.45f
+private const val ColorOSUnavailableAlpha = 0.6f
+
+/** How much of its colour the label and icon of a wide ColorOS tile that cannot be used keep. */
+private const val ColorOSUnavailableContentAlpha = 0.55f
 
 /** Tiles whose icon is dark ink on the white bubble of a dark panel, instead of blue. */
 private val COLOROS_INK_TILES = setOf("dnd", "dark", "night")
@@ -236,7 +239,29 @@ fun ContentScope.Tile(
     detailsViewModel: DetailsViewModel?,
     enableRevealEffect: Boolean = false,
     hideLabel: Boolean = false,
+    rows: Int = 1,
+    height: Dp? = null,
 ) {
+    // The Remix panel style draws its own tiles.
+    if (LocalRemixQsStyle.current) {
+        RemixTile(
+            tile = tile,
+            iconOnly = iconOnly,
+            squishiness = squishiness,
+            coroutineScope = coroutineScope,
+            bounceableInfo = bounceableInfo,
+            tileHapticsViewModelFactory = tileHapticsViewModelFactory,
+            modifier = modifier,
+            isVisible = isVisible,
+            requestToggleTextFeedback = requestToggleTextFeedback,
+            detailsViewModel = detailsViewModel,
+            enableRevealEffect = enableRevealEffect,
+            hideLabel = hideLabel,
+            rows = rows,
+            height = height,
+        )
+        return
+    }
     trace(tile.traceName) {
         val currentBounceableInfo by rememberUpdatedState(bounceableInfo)
         val resources = resources()
@@ -299,6 +324,8 @@ fun ContentScope.Tile(
         val shapeMode = if (colorOSStyle || nothingStyle) 0 else userShapeMode
         val animationStyle = rememberQSTileAnimationStyle()
         val wantCircle = shapeMode == 4 && iconOnly
+        // Compact tiles bounce their content, so the press does not resize their neighbors.
+        val compactTile = (classicStyle || iconOnly) && !nothingStyle && !colorOSStyle
         val tileShape =
             if (nothingStyle) {
                 when {
@@ -420,7 +447,7 @@ fun ContentScope.Tile(
                             }
                         )
                         .thenIf(!wantCircle) {
-                            modifier.borderOnFocus(
+                            Modifier.borderOnFocus(
                                 color = focusBorderColor,
                                 outerShape.topEnd,
                             )
@@ -430,20 +457,29 @@ fun ContentScope.Tile(
                             if (nothingStyle) {
                                 // The Nothing grid hands each tile a fixed cell to fill.
                                 Modifier.fillMaxSize()
+                            } else if (classicStyle || iconOnly) {
+                                // Keep compact tiles square when the grid cell is narrower.
+                                Modifier.fillMaxWidth()
+                                    .capHeightToWidth(
+                                        CommonTileDefaults.TileHeight,
+                                        tileHeight - CommonTileDefaults.TileHeight,
+                                    )
                             } else {
                                 Modifier.fillMaxWidth().height(tileHeight)
                             }
                         )
                         .tileToggleAnimation(animationStyle, uiState.visualState)
-                        .bounceable(
-                            currentBounceableInfo.bounceable,
-                            currentBounceableInfo.previousTile,
-                            currentBounceableInfo.nextTile,
-                            orientation = Orientation.Horizontal,
-                            bounceEnd = currentBounceableInfo.bounceEnd,
-                            // ColorOS presses with colorOSPress instead of the width bounce.
-                            interactionSource = interactionSource.takeIf { !colorOSStyle },
-                        ),
+                        .thenIf(!compactTile) {
+                            Modifier.bounceable(
+                                currentBounceableInfo.bounceable,
+                                currentBounceableInfo.previousTile,
+                                currentBounceableInfo.nextTile,
+                                orientation = Orientation.Horizontal,
+                                bounceEnd = currentBounceableInfo.bounceEnd,
+                                // ColorOS presses with colorOSPress instead of the width bounce.
+                                interactionSource = interactionSource.takeIf { !colorOSStyle },
+                            )
+                        },
             ) { expandable ->
                 // Use main click on long press for small, available dual target tiles.
                 // Open settings otherwise.
@@ -468,8 +504,15 @@ fun ContentScope.Tile(
                         .takeIf { !useLongClickToSettings || uiState.handlesSettingsClick }
 
                 // Bounce the tile's container if it is toggleable and is not a large
-                // dual target tile. These don't toggle on main click.
-                val bounceContainer = uiState.isToggleable && (iconOnly || !isDualTarget)
+                // dual target tile (these don't toggle on main click) and has room to grow.
+                // Otherwise bounce its content. Nothing and ColorOS manage their own press.
+                val bounceContainer =
+                    !compactTile &&
+                        uiState.isToggleable &&
+                        (iconOnly || !isDualTarget) &&
+                        (nothingStyle ||
+                            colorOSStyle ||
+                            currentBounceableInfo.canBounceContainer)
                 val click: (() -> Unit)? =
                     onClick@{
                             if (!isClickable) return@onClick
@@ -517,7 +560,9 @@ fun ContentScope.Tile(
                                 }
                                 .thenIf(!classicStyle) {
                                     Modifier
-                                        .size(tileHeight)
+                                        .widthIn(max = tileHeight)
+                                        .fillMaxWidth()
+                                        .aspectRatio(1f)
                                         .align(Alignment.Center)
                                         .clip(CircleShape)
                                         .then(
@@ -730,12 +775,16 @@ fun TileContainer(
     modifier: Modifier = Modifier,
     gradient: Brush? = null,
     fillCell: Boolean = false,
+    height: Dp? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
     Box(
         modifier =
             modifier
-                .then(if (fillCell) Modifier.fillMaxSize() else Modifier.height(TileHeight).fillMaxWidth())
+                .then(
+                    if (fillCell) Modifier.fillMaxSize()
+                    else Modifier.height(height ?: TileHeight).fillMaxWidth()
+                )
                 .thenIf(gradient != null && (!isDualTarget || iconOnly)) {
                     Modifier.drawBehind { drawRect(brush = gradient!!) }
                 }
@@ -824,7 +873,7 @@ fun LargeStaticTile(
     }
 }
 
-private fun Context.getTileIcon(icon: IconProvider): Icon {
+internal fun Context.getTileIcon(icon: IconProvider): Icon {
     return icon.icon?.let {
         if (it is QSTileImpl.ResourceIcon) {
             Icon.Resource(it.resId, null)
@@ -957,36 +1006,47 @@ fun rememberTileHaptic(): Boolean {
 
 @Composable
 fun rememberQSTileGradient(): Brush? {
-    val enabled = rememberGradientEnabled(Settings.System.QS_TILE_GRADIENT)
-    val gradientColors = rememberGradientColors()
-    return remember(enabled, gradientColors) {
-        if (enabled) gradientColors.diagonal() else null
-    }
+    val gradient = rememberGradient(Settings.System.QS_TILE_GRADIENT)
+    val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    return remember(gradient, isRtl) { gradient?.brush(mirrored = isRtl) }
 }
 
+/**
+ * The QS panel style, as the QS fragment provides it from its QsPanelStyleRepository. Null where
+ * nothing provides it, then [rememberQsPanelStyle] follows the setting by itself.
+ */
+internal val LocalQsPanelStyle = compositionLocalOf<QsPanelStyle?> { null }
+
 @Composable
-fun rememberQSPanelStyle(): Boolean {
+private fun rememberQsPanelStyle(): QsPanelStyle =
+    LocalQsPanelStyle.current ?: rememberObservedQsPanelStyle()
+
+/** Follows [Settings.System.QS_PANEL_STYLE] with an observer of its own. */
+@Composable
+private fun rememberObservedQsPanelStyle(): QsPanelStyle {
     val context = LocalContext.current
     val contentResolver = context.contentResolver
 
-    fun readPanelStyleEnabled(): Boolean {
+    fun readPanelStyle(): QsPanelStyle {
         return try {
-            Settings.System.getIntForUser(
-                contentResolver, Settings.System.QS_PANEL_STYLE, 0,
-                UserHandle.USER_CURRENT
-            ) == QS_PANEL_STYLE_CLASSIC
+            QsPanelStyle.of(
+                Settings.System.getIntForUser(
+                    contentResolver, Settings.System.QS_PANEL_STYLE, 0,
+                    UserHandle.USER_CURRENT
+                )
+            )
         } catch (_: Throwable) {
-            false
+            QsPanelStyle.DEFAULT
         }
     }
 
-    var classicStyleEnabled by remember { mutableStateOf(readPanelStyleEnabled()) }
+    var panelStyle by remember { mutableStateOf(readPanelStyle()) }
 
     DisposableEffect(contentResolver) {
         val observer = object : ContentObserver(null) {
             override fun onChange(selfChange: Boolean) {
                 context.mainExecutor.execute {
-                    classicStyleEnabled = readPanelStyleEnabled()
+                    panelStyle = readPanelStyle()
                 }
             }
         }
@@ -1001,48 +1061,11 @@ fun rememberQSPanelStyle(): Boolean {
         }
     }
 
-    return classicStyleEnabled
+    return panelStyle
 }
 
 @Composable
-fun rememberQSNothingStyle(): Boolean {
-    val context = LocalContext.current
-    val contentResolver = context.contentResolver
-
-    fun readNothingStyleEnabled(): Boolean {
-        return try {
-            Settings.System.getIntForUser(
-                contentResolver, Settings.System.QS_PANEL_STYLE, 0,
-                UserHandle.USER_CURRENT
-            ) == QS_PANEL_STYLE_NOTHING
-        } catch (_: Throwable) {
-            false
-        }
-    }
-
-    var nothingStyleEnabled by remember { mutableStateOf(readNothingStyleEnabled()) }
-
-    DisposableEffect(contentResolver) {
-        val observer = object : ContentObserver(null) {
-            override fun onChange(selfChange: Boolean) {
-                context.mainExecutor.execute {
-                    nothingStyleEnabled = readNothingStyleEnabled()
-                }
-            }
-        }
-
-        contentResolver.registerContentObserver(
-            Settings.System.getUriFor(Settings.System.QS_PANEL_STYLE),
-            false, observer, UserHandle.USER_ALL
-        )
-
-        onDispose {
-            contentResolver.unregisterContentObserver(observer)
-        }
-    }
-
-    return nothingStyleEnabled
-}
+fun rememberQSPanelStyle(): Boolean = rememberQsPanelStyle() == QsPanelStyle.CLASSIC
 
 /** Sliders the Nothing style can place in its grid. They are layout entries, not tiles. */
 enum class NothingSliderKind(val spec: String) {
@@ -1199,45 +1222,6 @@ fun putSecureStringIfChanged(resolver: android.content.ContentResolver, key: Str
     Settings.Secure.putStringForUser(resolver, key, value, UserHandle.USER_CURRENT)
 }
 
-@Composable
-fun rememberQSColorOSStyle(): Boolean {
-    val context = LocalContext.current
-    val contentResolver = context.contentResolver
-
-    fun readColorOSStyleEnabled(): Boolean {
-        return try {
-            Settings.System.getIntForUser(
-                contentResolver, Settings.System.QS_PANEL_STYLE, 0,
-                UserHandle.USER_CURRENT
-            ) == QS_PANEL_STYLE_COLOROS
-        } catch (_: Throwable) {
-            false
-        }
-    }
-
-    var colorOSStyleEnabled by remember { mutableStateOf(readColorOSStyleEnabled()) }
-
-    DisposableEffect(contentResolver) {
-        val observer = object : ContentObserver(null) {
-            override fun onChange(selfChange: Boolean) {
-                context.mainExecutor.execute {
-                    colorOSStyleEnabled = readColorOSStyleEnabled()
-                }
-            }
-        }
-
-        contentResolver.registerContentObserver(
-            Settings.System.getUriFor(Settings.System.QS_PANEL_STYLE),
-            false, observer, UserHandle.USER_ALL
-        )
-
-        onDispose {
-            contentResolver.unregisterContentObserver(observer)
-        }
-    }
-
-    return colorOSStyleEnabled
-}
 
 /** Largest cell of the Nothing style grid on this screen, or unspecified for no limit. */
 @Composable
@@ -1246,12 +1230,62 @@ fun rememberNothingQSMaxCellSize(): Dp {
     return if (maxCellSize > 0.dp) maxCellSize else Dp.Unspecified
 }
 
-/** Width of the four capped columns and their gaps in the Nothing style grid. */
+/** Columns the Nothing style layout is authored on: the editor and saved positions use them. */
+const val NOTHING_LAYOUT_COLUMNS = 4
+
+/** Columns of the Nothing style grid on this screen, 4 unless the screen is wide enough for more. */
 @Composable
-fun rememberNothingQSMaxContentWidth(): Dp {
+fun rememberNothingQSColumns(): Int = integerResource(R.integer.qs_nothing_columns)
+
+/** Width of the capped [columns] and their gaps in the Nothing style grid. */
+@Composable
+fun rememberNothingQSMaxContentWidth(columns: Int = NOTHING_LAYOUT_COLUMNS): Dp {
     val maxCellSize = rememberNothingQSMaxCellSize()
-    return if (maxCellSize == Dp.Unspecified) Dp.Unspecified else maxCellSize * 4 + 16.dp * 3
+    return if (maxCellSize == Dp.Unspecified) {
+        Dp.Unspecified
+    } else {
+        maxCellSize * columns + 16.dp * (columns - 1)
+    }
 }
+
+/** Whether the grid is wider than the 4 columns the saved positions were authored on. */
+fun isNothingReflow(columns: Int): Boolean = columns != NOTHING_LAYOUT_COLUMNS
+
+/**
+ * Saved positions are authored on the 4 column editor, so on other widths the tiles flow in their
+ * saved order instead: sorted by saved row, then column, with unplaced tiles last.
+ */
+fun <T> List<T>.inNothingLayoutOrder(
+    layout: Map<TileSpec, Pair<Int, Int>>,
+    columns: Int,
+    spec: (T) -> TileSpec,
+): List<T> {
+    if (!isNothingReflow(columns)) return this
+    return sortedWith(
+        compareBy(
+            { layout[spec(it)]?.first ?: Int.MAX_VALUE },
+            { layout[spec(it)]?.second ?: Int.MAX_VALUE },
+        )
+    )
+}
+
+/** The saved positions to place tiles at on [columns] columns: none when the tiles reflow. */
+fun Map<TileSpec, Pair<Int, Int>>.forNothingColumns(
+    columns: Int
+): Map<TileSpec, Pair<Int, Int>> = if (isNothingReflow(columns)) emptyMap() else this
+
+/** Sliders keep their place and share of the width, scaled to [columns] columns. */
+fun List<NothingSliderItem>.forNothingColumns(columns: Int): List<NothingSliderItem> =
+    if (!isNothingReflow(columns)) {
+        this
+    } else {
+        map {
+            it.copy(
+                col = it.col * columns / NOTHING_LAYOUT_COLUMNS,
+                span = it.span * columns / NOTHING_LAYOUT_COLUMNS,
+            )
+        }
+    }
 
 @Composable
 fun rememberQSTileLabelHide(): Boolean {
@@ -1291,47 +1325,6 @@ fun rememberQSTileLabelHide(): Boolean {
     }
 
     return labelHideEnabled
-}
-
-/** Whether the media card of the ColorOS panel style fills with the album art. */
-@Composable
-fun rememberQSColorOSMediaArtFill(): Boolean {
-    val context = LocalContext.current
-    val contentResolver = context.contentResolver
-
-    fun readArtFillEnabled(): Boolean {
-        return try {
-            Settings.System.getIntForUser(
-                contentResolver, Settings.System.QS_COLOROS_MEDIA_ART_FILL, 0,
-                UserHandle.USER_CURRENT
-            ) != 0
-        } catch (_: Throwable) {
-            false
-        }
-    }
-
-    var artFillEnabled by remember { mutableStateOf(readArtFillEnabled()) }
-
-    DisposableEffect(contentResolver) {
-        val observer = object : ContentObserver(null) {
-            override fun onChange(selfChange: Boolean) {
-                context.mainExecutor.execute {
-                    artFillEnabled = readArtFillEnabled()
-                }
-            }
-        }
-
-        contentResolver.registerContentObserver(
-            Settings.System.getUriFor(Settings.System.QS_COLOROS_MEDIA_ART_FILL),
-            false, observer, UserHandle.USER_ALL
-        )
-
-        onDispose {
-            contentResolver.unregisterContentObserver(observer)
-        }
-    }
-
-    return artFillEnabled
 }
 
 @Composable
@@ -1524,11 +1517,23 @@ private object TileDefaults {
                 )
             STATE_INACTIVE -> inactive
             // A round tile that cannot be used keeps the colours of one that is off and is faded
-            // as a whole by the caller. The wide tiles keep the greyed out colours, with the icon
-            // circle of a pill that is off.
+            // as a whole by the caller. The wide tiles keep the surface and the icon circle of
+            // one that is off and only dim their content: the stock greyed out colours are too
+            // faint over the glass.
             else ->
-                if (iconOnly) inactive
-                else unavailableTileColors().copy(iconBackground = bubbleOff)
+                if (iconOnly) {
+                    inactive
+                } else {
+                    val dimmed = onSurface.copy(alpha = ColorOSUnavailableContentAlpha)
+                    inactive.copy(
+                        label = dimmed,
+                        secondaryLabel = dimmed,
+                        icon = dimmed,
+                        outline = dimmed,
+                        classicLabel = dimmed,
+                        classicSecondaryLabel = dimmed,
+                    )
+                }
         }
     }
 
@@ -1648,7 +1653,7 @@ private object TileDefaults {
  */
 @Composable
 @ReadOnlyComposable
-private fun resources(): Resources {
+internal fun resources(): Resources {
     LocalConfiguration.current
     return LocalResources.current
 }
