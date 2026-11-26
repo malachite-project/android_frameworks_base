@@ -7,6 +7,7 @@ import android.graphics.drawable.Drawable
 import android.os.Handler
 import android.text.format.DateFormat
 import android.view.View
+import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.dagger.qualifiers.Background
 import com.android.systemui.dagger.qualifiers.Main
@@ -28,6 +29,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+@SysUISingleton
 class KeyguardZenAlarmViewController
 @Inject
 constructor(

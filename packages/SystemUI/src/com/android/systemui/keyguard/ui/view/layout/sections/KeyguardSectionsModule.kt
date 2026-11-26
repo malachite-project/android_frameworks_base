@@ -20,8 +20,6 @@ package com.android.systemui.keyguard.ui.view.layout.sections
 import com.android.systemui.keyguard.shared.model.KeyguardSection
 import dagger.BindsOptionalOf
 import dagger.Module
-import dagger.Binds
-import dagger.multibindings.IntoSet
 import javax.inject.Named
 
 @Module
@@ -32,13 +30,6 @@ abstract class KeyguardSectionsModule {
         const val KEYGUARD_AMBIENT_INDICATION_AREA_SECTION =
             "keyguard_ambient_indication_area_section"
         const val KEYGUARD_BATTERY_CHARGING_SECTION = "keyguard_battery_charging_section"
-    }
-
-    @Module
-    interface KeyguardClockStyleSectionModule {
-        @Binds
-        @IntoSet
-        fun keyguardClockStyleSection(impl: KeyguardClockStyleSection): KeyguardSection
     }
 
     @BindsOptionalOf

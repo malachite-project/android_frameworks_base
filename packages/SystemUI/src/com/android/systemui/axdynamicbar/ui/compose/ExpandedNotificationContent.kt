@@ -60,10 +60,12 @@ import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -71,6 +73,9 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -80,6 +85,8 @@ import com.android.systemui.axdynamicbar.model.IslandEvent
 import com.android.systemui.axdynamicbar.shared.IslandActions
 import com.android.systemui.axdynamicbar.shared.*
 import com.android.systemui.res.R
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 
 @Composable
 internal fun NotificationExpanded(
@@ -106,9 +113,7 @@ internal fun NotificationExpanded(
 
     Column(
         modifier = Modifier.fillMaxWidth().clickable {
-            try { event.sbn.notification?.contentIntent?.sendWithBal(context) }
-            catch (_: Exception) {}
-            interactor.collapseIsland()
+            if (event.contentIntent.trySendWithBal(context)) interactor.collapseIsland()
         },
         verticalArrangement = Arrangement.spacedBy(SpaceMd),
     ) {
@@ -391,6 +396,18 @@ private fun NotificationReplyField(
 ) {
     var replyText by remember { mutableStateOf("") }
     val lastFocused = remember { booleanArrayOf(false) }
+    var fieldFocused by remember { mutableStateOf(false) }
+    val windowInfo = LocalWindowInfo.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+
+    LaunchedEffect(fieldFocused) {
+        if (!fieldFocused) return@LaunchedEffect
+        withTimeoutOrNull(REPLY_WINDOW_FOCUS_TIMEOUT_MS) {
+            snapshotFlow { windowInfo.isWindowFocused }.first { it }
+        } ?: return@LaunchedEffect
+        keyboard?.show()
+    }
 
     Row(
         modifier =
@@ -407,6 +424,7 @@ private fun NotificationReplyField(
                 Modifier.weight(1f).padding(horizontal = SpaceLg).onFocusChanged { focusState ->
                     if (focusState.isFocused == lastFocused[0]) return@onFocusChanged
                     lastFocused[0] = focusState.isFocused
+                    fieldFocused = focusState.isFocused
                     interactor.onFocusableRequested?.invoke(focusState.isFocused)
                     if (focusState.isFocused) {
                         interactor.onNotificationInteraction(eventId)
@@ -434,6 +452,7 @@ private fun NotificationReplyField(
                         .clickable {
                             sendReply(context, reply, replyText, sbn)
                             replyText = ""
+                            focusManager.clearFocus()
                             interactor.onFocusableRequested?.invoke(false)
                         }
                         .padding(SpaceSm),
@@ -639,10 +658,9 @@ private fun GroupedNotificationRow(
                         modifier = Modifier.weight(1f),
                         compact = true,
                         onClick = {
-                            try {
-                                event.sbn.notification?.contentIntent?.sendWithBal(context)
-                            } catch (_: Exception) {}
-                            interactor.collapseIsland()
+                            if (event.contentIntent.trySendWithBal(context)) {
+                                interactor.collapseIsland()
+                            }
                         },
                     )
 

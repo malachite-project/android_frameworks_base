@@ -58,7 +58,9 @@ import com.android.compose.theme.PlatformTheme
 import com.android.systemui.shared.recents.utilities.Utilities
 import com.android.systemui.axdynamicbar.model.IslandEvent
 import com.android.systemui.axdynamicbar.shared.ExpandedMaxWidth
+import com.android.systemui.axdynamicbar.shared.ChipMorphContainer
 import com.android.systemui.axdynamicbar.shared.LocalBlurAlpha
+import com.android.systemui.axdynamicbar.shared.ProvideIslandHaptics
 import com.android.systemui.axdynamicbar.shared.SpaceLg
 import com.android.systemui.axdynamicbar.ui.compose.ExpandedIslandContent
 import com.android.systemui.axdynamicbar.ui.compose.NotificationAlertCard
@@ -195,7 +197,13 @@ constructor(
             .top > 0
 
         val view = ComposeView(context).apply {
-            setContent { PlatformTheme { OverlayContent(viewModel, statusBarTop, hasCutout) } }
+            setContent {
+                PlatformTheme {
+                    ProvideIslandHaptics(viewModel.hapticsEnabled) {
+                        OverlayContent(viewModel, statusBarTop, hasCutout)
+                    }
+                }
+            }
             setOnTouchListener { _, event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_OUTSIDE -> {
@@ -238,7 +246,7 @@ constructor(
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
             WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR or
             WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
-            if (desiredState.expanded || explicitFocusRequested) 0
+            if (explicitFocusRequested) 0
             else WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
 
         val params =
@@ -303,7 +311,7 @@ constructor(
     private fun applyWindowState() {
         val view = overlayView ?: return
         val params = view.layoutParams as? WindowManager.LayoutParams ?: return
-        val focusable = desiredState.needed && (desiredState.expanded || explicitFocusRequested)
+        val focusable = desiredState.needed && explicitFocusRequested
         val flags = if (focusable) {
             params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
         } else {
@@ -358,6 +366,8 @@ private fun OverlayContent(viewModel: AxDynamicBarChipViewModel, statusBarHeight
         initialValue = viewModel.interactor.uiState.value.notificationAlert
     )
     val compactNotifs by viewModel.interactor.settings.compactNotifications.collectAsStateWithLifecycle()
+    val morphEnabled by viewModel.chipMorphEnabled.collectAsStateWithLifecycle()
+    val chipBounds by viewModel.chipBoundsOnScreen.collectAsStateWithLifecycle()
 
     val lastAlert = remember { mutableStateOf(notifAlert) }
     LaunchedEffect(notifAlert) {
@@ -377,7 +387,7 @@ private fun OverlayContent(viewModel: AxDynamicBarChipViewModel, statusBarHeight
     }
 
     LaunchedEffect(notifAlert, notifVisible.targetState, notifVisible.currentState, notifVisible.isIdle) {
-        if (notifAlert == null && !notifVisible.targetState && notifVisible.isIdle &&
+        if (!morphEnabled && notifAlert == null && !notifVisible.targetState && notifVisible.isIdle &&
             !notifVisible.currentState
         ) {
             lastAlert.value = null
@@ -408,127 +418,152 @@ private fun OverlayContent(viewModel: AxDynamicBarChipViewModel, statusBarHeight
         label = "alert_blur_alpha",
     )
 
-    CompositionLocalProvider(LocalBlurAlpha provides expandedBlurAlpha) {
-        AnimatedVisibility(
-            visibleState = expandedVisible,
-            enter = fadeIn(motionScheme.defaultEffectsSpec()) + scaleIn(
-                animationSpec = motionScheme.defaultSpatialSpec(),
-                initialScale = 0.4f,
-                transformOrigin = origin,
-            ),
-            exit = fadeOut(motionScheme.fastEffectsSpec()) + scaleOut(
-                animationSpec = motionScheme.fastSpatialSpec(),
-                targetScale = 0.4f,
-                transformOrigin = origin,
-            ),
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .pointerInput(Unit) {
-                        val slop = viewConfiguration.touchSlop
-                        awaitEachGesture {
-                            var ev: PointerEvent
-                            do {
-                                ev = awaitPointerEvent(PointerEventPass.Final)
-                            } while (!ev.changes.any { it.changedToDownIgnoreConsumed() })
+    val expandedPanel: @Composable (Modifier) -> Unit = { contentModifier ->
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .pointerInput(Unit) {
+                    val slop = viewConfiguration.touchSlop
+                    awaitEachGesture {
+                        var ev: PointerEvent
+                        do {
+                            ev = awaitPointerEvent(PointerEventPass.Final)
+                        } while (!ev.changes.any { it.changedToDownIgnoreConsumed() })
 
-                            val downChange =
-                                ev.changes.firstOrNull { it.changedToDownIgnoreConsumed() }
-                                    ?: ev.changes.firstOrNull()
-                                    ?: return@awaitEachGesture
+                        val downChange =
+                            ev.changes.firstOrNull { it.changedToDownIgnoreConsumed() }
+                                ?: ev.changes.firstOrNull()
+                                ?: return@awaitEachGesture
 
-                            val pointerId = downChange.id
-                            val downPos = downChange.position
-                            val downConsumed = downChange.isConsumed
-                            var hasExceededSlop = false
+                        val pointerId = downChange.id
+                        val downPos = downChange.position
+                        val downConsumed = downChange.isConsumed
+                        var hasExceededSlop = false
 
-                            while (true) {
-                                val event = awaitPointerEvent(PointerEventPass.Final)
-                                val change =
-                                    event.changes.firstOrNull { it.id == pointerId }
-                                        ?: event.changes.firstOrNull()
-                                        ?: break
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Final)
+                            val change =
+                                event.changes.firstOrNull { it.id == pointerId }
+                                    ?: event.changes.firstOrNull()
+                                    ?: break
 
-                                val dx = change.position.x - downPos.x
-                                val dy = change.position.y - downPos.y
-                                if (dx * dx + dy * dy > slop * slop) {
-                                    hasExceededSlop = true
+                            val dx = change.position.x - downPos.x
+                            val dy = change.position.y - downPos.y
+                            if (dx * dx + dy * dy > slop * slop) {
+                                hasExceededSlop = true
+                            }
+
+                            if (!change.pressed) {
+                                if (!downConsumed && !change.isConsumed && !hasExceededSlop) {
+                                    change.consume()
+                                    viewModel.statusBarExpansion.collapse()
                                 }
-
-                                if (!change.pressed) {
-                                    if (!downConsumed && !change.isConsumed && !hasExceededSlop) {
-                                        change.consume()
-                                        viewModel.statusBarExpansion.collapse()
-                                    }
-                                    break
-                                }
+                                break
                             }
                         }
                     }
-                    .padding(top = topPad),
-                contentAlignment = Alignment.TopCenter,
-            ) {
-                chipState?.let { state ->
-                    val filtered = expandableEvents
-                    if (filtered.isEmpty()) return@let
-                    Box(
-                        modifier =
-                            Modifier.clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                                // A tap on a card's own surface (not on one of its controls)
-                                // minimises the island, matching a tap on the chip. Previously
-                                // this was an inert clickable that silently swallowed the tap.
-                                onClick = { viewModel.statusBarExpansion.collapse() },
-                            )
-                    ) {
-                        ExpandedIslandContent(
-                            events = filtered,
-                            interactor = viewModel.interactor,
-                            onCollapse = { viewModel.statusBarExpansion.collapse() },
-                            pinnedEventId = state.event.id,
-                            hapticsViewModelFactory = viewModel.interactor.sliderHapticsViewModelFactory,
+                }
+                .padding(top = topPad),
+            contentAlignment = Alignment.TopCenter,
+        ) {
+            chipState?.let { state ->
+                val filtered = expandableEvents
+                if (filtered.isEmpty()) return@let
+                Box(
+                    modifier =
+                        contentModifier.clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            // A tap on a card's own surface (not on one of its controls)
+                            // minimises the island, matching a tap on the chip. Previously
+                            // this was an inert clickable that silently swallowed the tap.
+                            onClick = { viewModel.statusBarExpansion.collapse() },
                         )
-                    }
+                ) {
+                    ExpandedIslandContent(
+                        events = filtered,
+                        interactor = viewModel.interactor,
+                        onCollapse = { viewModel.statusBarExpansion.collapse() },
+                        pinnedEventId = state.event.id,
+                        hapticsViewModelFactory = viewModel.interactor.sliderHapticsViewModelFactory,
+                        isVisible = isExpanded,
+                    )
                 }
             }
         }
     }
 
-    CompositionLocalProvider(LocalBlurAlpha provides alertBlurAlpha) {
-        AnimatedVisibility(
-            visibleState = notifVisible,
-            enter = fadeIn(motionScheme.defaultEffectsSpec()) + scaleIn(
-                animationSpec = motionScheme.defaultSpatialSpec(),
-                initialScale = 0.4f,
-                transformOrigin = origin,
-            ),
-            exit = fadeOut(motionScheme.fastEffectsSpec()) + scaleOut(
-                animationSpec = motionScheme.fastSpatialSpec(),
-                targetScale = 0.4f,
-                transformOrigin = origin,
-            ),
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = topPad),
-                contentAlignment = Alignment.TopCenter,
+    if (morphEnabled) {
+        ChipMorphContainer(visible = isExpanded, chipBounds = chipBounds) { contentModifier ->
+            expandedPanel(contentModifier)
+        }
+    } else {
+        CompositionLocalProvider(LocalBlurAlpha provides expandedBlurAlpha) {
+            AnimatedVisibility(
+                visibleState = expandedVisible,
+                enter = fadeIn(motionScheme.defaultEffectsSpec()) + scaleIn(
+                    animationSpec = motionScheme.defaultSpatialSpec(),
+                    initialScale = 0.4f,
+                    transformOrigin = origin,
+                ),
+                exit = fadeOut(motionScheme.fastEffectsSpec()) + scaleOut(
+                    animationSpec = motionScheme.fastSpatialSpec(),
+                    targetScale = 0.4f,
+                    transformOrigin = origin,
+                ),
             ) {
-                val alert = lastAlert.value
-                if (alert != null) {
-                    NotificationAlertCard(
-                        notification = alert,
-                        interactor = viewModel.interactor,
-                        onDismiss = { viewModel.interactor.dismissNotificationAlert() },
-                        initiallyCompact = compactNotifs,
-                        modifier =
-                            Modifier.widthIn(max = ExpandedMaxWidth)
-                                .fillMaxWidth()
-                                .padding(horizontal = SpaceLg),
-                    )
-                }
+                expandedPanel(Modifier)
+            }
+        }
+    }
+
+    val alertCard: @Composable (Modifier) -> Unit = { cardModifier ->
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = topPad),
+            contentAlignment = Alignment.TopCenter,
+        ) {
+            val alert = lastAlert.value
+            if (alert != null) {
+                NotificationAlertCard(
+                    notification = alert,
+                    interactor = viewModel.interactor,
+                    onDismiss = { viewModel.interactor.dismissNotificationAlert() },
+                    initiallyCompact = compactNotifs,
+                    modifier =
+                        Modifier.widthIn(max = ExpandedMaxWidth)
+                            .fillMaxWidth()
+                            .padding(horizontal = SpaceLg)
+                            .then(cardModifier),
+                )
+            }
+        }
+    }
+
+    if (morphEnabled) {
+        ChipMorphContainer(
+            visible = showNotif,
+            chipBounds = chipBounds,
+            onHidden = { if (notifAlert == null) lastAlert.value = null },
+            content = alertCard,
+        )
+    } else {
+        CompositionLocalProvider(LocalBlurAlpha provides alertBlurAlpha) {
+            AnimatedVisibility(
+                visibleState = notifVisible,
+                enter = fadeIn(motionScheme.defaultEffectsSpec()) + scaleIn(
+                    animationSpec = motionScheme.defaultSpatialSpec(),
+                    initialScale = 0.4f,
+                    transformOrigin = origin,
+                ),
+                exit = fadeOut(motionScheme.fastEffectsSpec()) + scaleOut(
+                    animationSpec = motionScheme.fastSpatialSpec(),
+                    targetScale = 0.4f,
+                    transformOrigin = origin,
+                ),
+            ) {
+                alertCard(Modifier)
             }
         }
     }

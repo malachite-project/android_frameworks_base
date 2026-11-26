@@ -59,6 +59,7 @@ public class BcSmartspaceView extends FrameLayout
     public BcSmartspaceDataPlugin mDataProvider;
     public boolean mHasPerformedLongPress;
     public boolean mHasPostedLongPress;
+    /** Set by the keyguard to keep this view hidden whatever targets it holds. */
     private boolean mHiddenByPolicy;
     public float mInitialTouchX;
     public float mInitialTouchY;
@@ -850,15 +851,24 @@ public class BcSmartspaceView extends FrameLayout
     }
 
     @Override
+    public void setVisibility(int visibility) {
+        // The adapter re-shows the view on every target update; keep the policy hide in place
+        super.setVisibility(mHiddenByPolicy ? View.GONE : visibility);
+    }
+
+    @Override
     public final void setHiddenByPolicy(boolean hidden) {
-        if (mHiddenByPolicy == hidden) {
-            return;
-        }
+        if (mHiddenByPolicy == hidden) return;
         mHiddenByPolicy = hidden;
         if (hidden) {
-            BcSmartspaceTemplateDataUtils.updateVisibility(this, View.GONE);
-        } else if (!mAdapter.smartspaceTargets.isEmpty()) {
-            BcSmartspaceTemplateDataUtils.updateVisibility(this, View.VISIBLE);
+            super.setVisibility(View.GONE);
+        } else if (mAdapter != null) {
+            // Visibility requests made while hidden were dropped, so derive it again from the
+            // current targets the way the adapter does.
+            super.setVisibility(mAdapter.smartspaceTargets.isEmpty() ? View.GONE : View.VISIBLE);
+            mAdapter.updateTargetVisibility(null, false);
+        } else {
+            super.setVisibility(View.VISIBLE);
         }
     }
 

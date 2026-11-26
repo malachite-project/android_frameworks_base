@@ -406,14 +406,14 @@ public final class AttestationUtils {
     }
 
     public static int getAttestVersion() {
+        final int firstApiLevel = SystemProperties.getInt("ro.product.first_api_level", -1);
+        if (firstApiLevel > 0) {
+            return apiLevelToAttestVersion(firstApiLevel);
+        }
         final int sdkVersion = getSdkAttestVersion();
         final int halVersion = getKeyMintAidlVersion();
         if (halVersion > 0 && sdkVersion >= 100) {
             return Math.min(sdkVersion, halVersion * 100);
-        }
-        final int firstApiLevel = SystemProperties.getInt("ro.product.first_api_level", -1);
-        if (firstApiLevel > 0) {
-            return apiLevelToAttestVersion(firstApiLevel);
         }
         return sdkVersion;
     }
@@ -645,6 +645,11 @@ public final class AttestationUtils {
             TrickyStoreService.CustomPatchLevel level, boolean isLong) {
         if (level != null && level.vendor != null) {
             Integer parsed = parsePatchLevel(level.vendor, isLong);
+            if (parsed != null) return parsed;
+        }
+        String vendor = SystemProperties.get("ro.vendor.build.security_patch", "");
+        if (!vendor.isEmpty()) {
+            Integer parsed = parsePatchLevel(vendor, isLong);
             if (parsed != null) return parsed;
         }
         return convertPatchLevel(Build.VERSION.SECURITY_PATCH, isLong);

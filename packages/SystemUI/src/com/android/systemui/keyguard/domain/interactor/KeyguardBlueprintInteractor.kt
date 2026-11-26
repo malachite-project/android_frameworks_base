@@ -25,10 +25,14 @@ import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.keyguard.data.repository.KeyguardBlueprintRepository
 import com.android.systemui.keyguard.shared.model.KeyguardBlueprint
+import com.android.systemui.keyguard.shared.model.KeyguardSection
 import com.android.systemui.keyguard.ui.view.layout.blueprints.DefaultKeyguardBlueprint
 import com.android.systemui.keyguard.ui.view.layout.blueprints.SplitShadeKeyguardBlueprint
 import com.android.systemui.keyguard.ui.view.layout.blueprints.transitions.IntraBlueprintTransition.Config
 import com.android.systemui.keyguard.ui.view.layout.blueprints.transitions.IntraBlueprintTransition.Type
+import com.android.systemui.keyguard.ui.view.layout.sections.KeyguardClockStyleSection
+import com.android.systemui.keyguard.ui.view.layout.sections.KeyguardSliceViewSection
+import com.android.systemui.keyguard.ui.view.layout.sections.KeyguardWeatherViewSection
 import com.android.systemui.keyguard.ui.view.layout.sections.SmartspaceSection
 import com.android.systemui.scene.shared.flag.SceneContainerFlag
 import com.android.systemui.shade.ShadeDisplayAware
@@ -37,6 +41,9 @@ import com.android.systemui.shade.shared.model.ShadeMode
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 
@@ -50,6 +57,7 @@ constructor(
     @ShadeDisplayAware private val configurationInteractor: ConfigurationInteractor,
     private val fingerprintPropertyInteractor: FingerprintPropertyInteractor,
     private val smartspaceSection: SmartspaceSection,
+    private val keyguardSmartspaceInteractor: KeyguardSmartspaceInteractor,
 ) : CoreStartable {
     /** The current blueprint for the lockscreen. */
     val blueprint: StateFlow<KeyguardBlueprint> = keyguardBlueprintRepository.blueprint
@@ -83,6 +91,17 @@ constructor(
             configurationInteractor.onAnyConfigurationChange.collect {
                 refreshBlueprint(refreshConfig)
             }
+        }
+        applicationScope.launch {
+            combine(
+                    keyguardSmartspaceInteractor.isWeatherEnabled,
+                    keyguardSmartspaceInteractor.isOmniWeatherEnabled,
+                ) { smartspace, omniWeather ->
+                    smartspace to (omniWeather && !smartspace)
+                }
+                .distinctUntilChanged()
+                .drop(1) // Initial state is already built.
+                .collect { rebuildSmartspaceSections() }
         }
     }
 
@@ -119,6 +138,25 @@ constructor(
 
     fun getCurrentBlueprint(): KeyguardBlueprint {
         return keyguardBlueprintRepository.blueprint.value
+    }
+
+    fun rebuildSmartspaceSections() = rebuildSections { it.dependsOnSmartspace() }
+
+    /**
+     * Rebuilds the sections whose views depend on whether a custom clock style is enabled, so
+     * switching between the plugin clock and a custom clock style applies without restarting.
+     */
+    fun rebuildCustomClockSections() =
+        rebuildSections { it is KeyguardClockStyleSection || it.dependsOnSmartspace() }
+
+    private fun KeyguardSection.dependsOnSmartspace(): Boolean =
+        this is SmartspaceSection ||
+            this is KeyguardSliceViewSection ||
+            this is KeyguardWeatherViewSection
+
+    private fun rebuildSections(predicate: (KeyguardSection) -> Boolean) {
+        val sections = getCurrentBlueprint().sections.filter(predicate)
+        refreshBlueprint(Config(Type.NoTransition, rebuildSections = sections))
     }
 
     companion object {

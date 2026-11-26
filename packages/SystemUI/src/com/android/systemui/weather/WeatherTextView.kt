@@ -18,8 +18,8 @@ package com.android.systemui.weather
 import android.content.Context
 import android.util.AttributeSet
 import android.view.View
+import android.widget.ImageView
 import android.widget.TextView
-import com.android.systemui.res.R
 
 class WeatherTextView @JvmOverloads constructor(
     context: Context,
@@ -27,28 +27,28 @@ class WeatherTextView @JvmOverloads constructor(
     defStyle: Int = 0
 ) : TextView(context, attrs, defStyle) {
 
-    private val mWeatherViewController: WeatherViewController
+    // WeatherViewController cancels its scope in removeObserver(), so it can't be
+    // reused after a detach. Create a fresh one for every attach.
+    private var weatherViewController: WeatherViewController? = null
 
     init {
         visibility = View.GONE
-
-        val stubIcon = android.widget.ImageView(context)
-
-        mWeatherViewController = WeatherViewController(
-            context = context,
-            weatherIcon = stubIcon,
-            weatherTemp = this,
-            weatherInfoView = this,
-        )
     }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        mWeatherViewController.init()
+        weatherViewController?.removeObserver()
+        weatherViewController = WeatherViewController(
+            context = context,
+            weatherIcon = ImageView(context),
+            weatherTemp = this,
+            weatherInfoView = this,
+        ).also { it.init() }
     }
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
-        mWeatherViewController.removeObserver()
+        weatherViewController?.removeObserver()
+        weatherViewController = null
     }
 }

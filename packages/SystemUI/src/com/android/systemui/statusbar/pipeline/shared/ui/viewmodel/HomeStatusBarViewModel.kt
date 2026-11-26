@@ -25,6 +25,7 @@ import androidx.compose.runtime.getValue
 import com.android.app.tracing.FlowTracing.traceEach
 import com.android.app.tracing.TrackGroupUtils.trackGroup
 import com.android.systemui.Flags
+import com.android.systemui.axdynamicbar.ui.AxDynamicBarChipViewModel
 import com.android.systemui.dagger.qualifiers.Background
 import com.android.systemui.desktop.domain.interactor.DesktopInteractor
 import com.android.systemui.display.dagger.SystemUIDisplaySubcomponent.DisplayAware
@@ -208,6 +209,7 @@ interface HomeStatusBarViewModel : Activatable {
     val shouldShowOperatorNameView: Flow<Boolean>
     val isClockVisible: Flow<VisibilityModel>
     val isNotificationIconContainerVisible: Flow<VisibilityModel>
+    val isStatusBarLogoVisible: Flow<VisibilityModel>
     val hideStartSideContentForHeadsUp: Flow<Boolean>
 
     /**
@@ -311,6 +313,7 @@ constructor(
     private val userLogoutInteractor: UserLogoutInteractor,
     private val scrollToTopInteractor: ScrollToTopInteractor,
     private val headsUpNotificationInteractor: HeadsUpNotificationInteractor,
+    axDynamicBarChipViewModel: AxDynamicBarChipViewModel,
 ) : HomeStatusBarViewModel, HydratedActivatable(enableEnqueuedActivations = true) {
 
     val logger = loggerFactory.getOrCreate(logBufferName(thisDisplayId), 60)
@@ -555,8 +558,9 @@ constructor(
         combine(
             hasOngoingActivityChips,
             statusBarVisibilityInteractor.canShowOngoingActivityChips,
-        ) { hasChips, canShowChips ->
-            hasChips && canShowChips
+            axDynamicBarChipViewModel.isShowingOnStatusBar,
+        ) { hasChips, canShowChips, axChipShowing ->
+            (hasChips && canShowChips) || axChipShowing
         }
 
     override val hideStartSideContentForHeadsUp: Flow<Boolean> =
@@ -605,6 +609,19 @@ constructor(
                 columnPrefix = COL_PREFIX_NOTIF_CONTAINER,
                 initialValue = VisibilityModel(false.toVisibleOrInvisible(), false),
             )
+            .flowOn(bgDispatcher)
+
+    override val isStatusBarLogoVisible: Flow<VisibilityModel> =
+        combine(
+                statusBarVisibilityInteractor.shouldHomeStatusBarBeVisible,
+                homeStatusBarInteractor.visibilityViaDisableFlags,
+            ) { shouldStatusBarBeVisible, visibilityViaDisableFlags ->
+                val showLogo =
+                    shouldStatusBarBeVisible &&
+                        visibilityViaDisableFlags.areNotificationIconsAllowed
+                VisibilityModel(showLogo.toVisibleOrGone(), visibilityViaDisableFlags.animate)
+            }
+            .distinctUntilChanged()
             .flowOn(bgDispatcher)
 
     private val isSystemInfoVisible =

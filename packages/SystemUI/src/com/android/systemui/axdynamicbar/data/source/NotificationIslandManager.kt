@@ -23,7 +23,6 @@ import com.android.systemui.axdynamicbar.model.RecordingState
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.util.ScrimUtils
-import java.util.Collections
 import java.util.Objects
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
@@ -91,8 +90,6 @@ constructor(
             addAll(RECORDER_PACKAGES)
         }
 
-        private const val MAX_NOTIFICATION_EVENTS = 10
-        private const val MAX_SEEN_SIGNATURES = 256
 
         private val NOW_PLAYING_BY_PATTERN = Regex("""(.+?)\s+by\s+(.+)""", RegexOption.IGNORE_CASE)
         private val ELAPSED_PATTERN = Regex("""(\d+):(\d+)(?::(\d+))?""")
@@ -149,6 +146,7 @@ constructor(
     private var stopwatchDismissedKey: String? = null
     private val dismissedPromotedKeys = mutableSetOf<String>()
     private val dismissedSportsKeys = mutableSetOf<String>()
+    private var dismissedNowPlayingTitle: String? = null
     private var alarmNotificationKey: String? = null
 
     val notificationFlow = MutableSharedFlow<IslandEvent.Notification>(
@@ -162,14 +160,18 @@ constructor(
 
     var activeMediaPackageProvider: (() -> String?)? = null
 
-    private val seenSignatures: MutableMap<String, Long> =
-        Collections.synchronizedMap(
-            object : LinkedHashMap<String, Long>(64, 0.75f, true) {
-                override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?) =
-                    size > MAX_SEEN_SIGNATURES
-            }
-        )
+    /**
+     * Last content signature per posted key. Not size-capped: evicting a still-posted entry made
+     * its next update look new and alert again. Removal drops the entry, so it is bounded by the
+     * live notifications. Concurrent because stopListening() clears it from another thread.
+     */
+    private val seenSignatures: MutableMap<String, Long> = ConcurrentHashMap()
 
+    /**
+     * Keys that may still be shown. Cleared on removal and on dismiss so a late coalesce cannot
+     * put the notification back (and pin its sbn/bitmaps). A later post adds the key again.
+     * This, not a size cap, is what bounds _notificationEvents to live notifications.
+     */
     private val activeNotificationKeys: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val notificationLock = Any()
 
@@ -240,6 +242,7 @@ constructor(
 
                 _sportsEvents.update { list -> list.filter { it.key != sbn.key } }
 
+                if (_nowPlayingEvent.value?.key == sbn.key) dismissedNowPlayingTitle = null
                 _nowPlayingEvent.update { if (it?.key == sbn.key) null else it }
 
                 synchronized(notificationLock) {
@@ -250,7 +253,7 @@ constructor(
                 notificationRemovedFlow.tryEmit(sbn.key)
             }
 
-            override fun onNotificationPosted(sbn: StatusBarNotification) {
+            override fun onNotificationPosted(sbn: StatusBarNotification, isSilent: Boolean) {
                 if (!listening) return
                 val pkg = sbn.packageName ?: return
                 val extras = sbn.notification?.extras ?: return
@@ -391,6 +394,7 @@ constructor(
                                 startTimeMs = startTime,
                                 actions = notifActions,
                                 pausedDurationMs = 0L,
+                                contentIntent = sbn.notification?.contentIntent,
                             )
                         )
                         return
@@ -415,6 +419,7 @@ constructor(
                             appName = title.ifEmpty { existing.appName },
                             state = RecordingState.SAVED,
                             actions = notifActions,
+                            contentIntent = sbn.notification?.contentIntent,
                         )
                     )
                     return
@@ -463,6 +468,17 @@ constructor(
                 }
                 if (sbn.isOngoing) return
                 if ("notification" in disabledTypes) return
+                if (isSilent) {
+                    seenSignatures.remove(sbn.key)
+                    synchronized(notificationLock) {
+                        if (activeNotificationKeys.remove(sbn.key)) {
+                            _notificationEvents.update { list ->
+                                list.filter { it.sbn.key != sbn.key }
+                            }
+                        }
+                    }
+                    return
+                }
                 val category = sbn.notification?.category
                 if (category == Notification.CATEGORY_TRANSPORT) return
                 if (category == Notification.CATEGORY_SERVICE && !hasProgress) return
@@ -643,6 +659,7 @@ constructor(
         _stopwatchEvent.value = null
         dismissedPromotedKeys.clear()
         dismissedSportsKeys.clear()
+        dismissedNowPlayingTitle = null
         _alarmEvent.value = null
         _callEvents.value = emptyList()
         synchronized(notificationLock) { _notificationEvents.value = emptyList() }
@@ -667,6 +684,7 @@ constructor(
 
     fun dismissNotification(event: IslandEvent.Notification) {
         synchronized(notificationLock) {
+            activeNotificationKeys.remove(event.sbn.key)
             _notificationEvents.update { list -> list.filter { it.id != event.id } }
         }
     }
@@ -676,7 +694,7 @@ constructor(
         synchronized(notificationLock) {
             if (event.sbn.key !in activeNotificationKeys) return
             _notificationEvents.update { list ->
-                (listOf(event) + list.filter { it.id != event.id }).take(MAX_NOTIFICATION_EVENTS)
+                listOf(event) + list.filter { it.id != event.id }
             }
         }
     }
@@ -772,6 +790,7 @@ constructor(
                 appIcon = icon,
                 isPaused = isPaused,
                 actions = actions,
+                contentIntent = sbn.notification?.contentIntent,
             )
         timerNotificationKey = sbn.key
         lastTimer = event
@@ -829,6 +848,7 @@ constructor(
                 isRunning = isRunning,
                 appIcon = icon,
                 actions = actions,
+                contentIntent = sbn.notification?.contentIntent,
             )
         stopwatchNotificationKey = sbn.key
         if (sbn.key != stopwatchDismissedKey) _stopwatchEvent.value = event
@@ -884,6 +904,7 @@ constructor(
                 triggerTimeMs = sbn.notification.`when`,
                 isRinging = isRinging,
                 appIcon = icon,
+                contentIntent = sbn.notification?.contentIntent,
             )
         alarmNotificationKey = sbn.key
         _alarmEvent.value = event
@@ -1087,12 +1108,20 @@ constructor(
         _sportsEvents.update { list -> list.filter { e -> matching.none { it.key == e.key } } }
     }
 
+    /** Hides the current song until a different one is recognized. */
     fun clearNowPlaying() {
+        dismissedNowPlayingTitle = _nowPlayingEvent.value?.sbn?.notification?.extras
+            ?.getCharSequence("android.title")?.toString()
         _nowPlayingEvent.value = null
     }
 
     private fun handleNowPlaying(sbn: StatusBarNotification, extras: Bundle) {
         val title = extras.getCharSequence("android.title")?.toString() ?: return
+        if (title == dismissedNowPlayingTitle) {
+            _nowPlayingEvent.value = null
+            return
+        }
+        dismissedNowPlayingTitle = null
         val byMatch = NOW_PLAYING_BY_PATTERN.find(title)
         val dashParts = if (byMatch == null) title.split(" - ", " – ", limit = 2) else null
         val songTitle: String

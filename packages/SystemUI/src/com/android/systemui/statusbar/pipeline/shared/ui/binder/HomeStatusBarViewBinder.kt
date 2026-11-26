@@ -19,8 +19,10 @@ package com.android.systemui.statusbar.pipeline.shared.ui.binder
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.app.WindowConfiguration
+import android.content.ComponentCallbacks
 import android.content.ContentResolver
 import android.content.Context
+import android.content.res.Configuration
 import android.database.ContentObserver
 import android.graphics.Color
 import android.net.Uri
@@ -29,6 +31,7 @@ import android.os.Looper
 import android.os.UserHandle
 import android.provider.Settings
 import android.view.View
+import androidx.core.graphics.ColorUtils
 import androidx.core.view.isVisible
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
@@ -91,6 +94,13 @@ class HomeStatusBarViewBinderImpl @Inject constructor() : HomeStatusBarViewBinde
         val chipStyle: Int,
         val position: Int,
         val visibilityModel: VisibilityModel,
+        val gradientStartColor: Int = DEFAULT_GRADIENT_START_COLOR,
+        val gradientEndColor: Int = DEFAULT_GRADIENT_END_COLOR,
+        val gradientAngle: Float = DEFAULT_GRADIENT_ANGLE.toFloat(),
+        val gradientMaskText: Boolean = false,
+        val gradientColorMode: Int = ClockChipGradientDrawable.COLOR_MODE_AUTO,
+        /** Current Material accent pair, used by auto mode and as custom-mode fallback. */
+        val accentColors: Pair<Int, Int> = 0 to 0,
     )
 
     private data class Padding(
@@ -143,6 +153,16 @@ class HomeStatusBarViewBinderImpl @Inject constructor() : HomeStatusBarViewBinde
                             chipStyle = 0,
                             position = context.contentResolver.readClockPosition(),
                             visibilityModel = VisibilityModel(View.GONE, true),
+                            gradientStartColor =
+                                context.contentResolver.readClockChipGradientStartColor(),
+                            gradientEndColor =
+                                context.contentResolver.readClockChipGradientEndColor(),
+                            gradientAngle = context.contentResolver.readClockChipGradientAngle(),
+                            gradientMaskText =
+                                context.contentResolver.readClockChipGradientMaskText(),
+                            gradientColorMode =
+                                context.contentResolver.readClockChipGradientColorMode(),
+                            accentColors = ClockChipGradientDrawable.accentColors(context),
                         )
                     )
 
@@ -156,6 +176,24 @@ class HomeStatusBarViewBinderImpl @Inject constructor() : HomeStatusBarViewBinde
                     LineageSettings.System.getUriFor(LineageSettings.System.STATUS_BAR_CLOCK)
                 val statusBarClockChipUri: Uri =
                     Settings.System.getUriFor(Settings.System.STATUSBAR_CLOCK_CHIP)
+                val gradientStartColorUri: Uri =
+                    Settings.System.getUriFor(
+                        Settings.System.STATUSBAR_CLOCK_CHIP_GRADIENT_START_COLOR
+                    )
+                val gradientEndColorUri: Uri =
+                    Settings.System.getUriFor(
+                        Settings.System.STATUSBAR_CLOCK_CHIP_GRADIENT_END_COLOR
+                    )
+                val gradientAngleUri: Uri =
+                    Settings.System.getUriFor(Settings.System.STATUSBAR_CLOCK_CHIP_GRADIENT_ANGLE)
+                val gradientMaskTextUri: Uri =
+                    Settings.System.getUriFor(
+                        Settings.System.STATUSBAR_CLOCK_CHIP_GRADIENT_MASK_TEXT
+                    )
+                val gradientColorModeUri: Uri =
+                    Settings.System.getUriFor(
+                        Settings.System.STATUSBAR_CLOCK_CHIP_GRADIENT_COLOR_MODE
+                    )
 
                 val taskStackListener =
                     object : TaskStackChangeListener {
@@ -232,13 +270,53 @@ class HomeStatusBarViewBinderImpl @Inject constructor() : HomeStatusBarViewBinde
                                             chipStyle = chipStyle
                                         )
                                     }
+                                    gradientStartColorUri ->
+                                        current.copy(
+                                            gradientStartColor =
+                                                context.contentResolver
+                                                    .readClockChipGradientStartColor()
+                                        )
+                                    gradientEndColorUri ->
+                                        current.copy(
+                                            gradientEndColor =
+                                                context.contentResolver
+                                                    .readClockChipGradientEndColor()
+                                        )
+                                    gradientAngleUri ->
+                                        current.copy(
+                                            gradientAngle =
+                                                context.contentResolver.readClockChipGradientAngle()
+                                        )
+                                    gradientMaskTextUri ->
+                                        current.copy(
+                                            gradientMaskText =
+                                                context.contentResolver
+                                                    .readClockChipGradientMaskText()
+                                        )
+                                    gradientColorModeUri ->
+                                        current.copy(
+                                            gradientColorMode =
+                                                context.contentResolver
+                                                    .readClockChipGradientColorMode()
+                                        )
                                     else -> current
                                 }
                             }
                         }
                     }
 
-                val urisToObserve = listOf(clockAutoHideUri, iconHideListUri, statusBarClockUri, statusBarClockChipUri)
+                val urisToObserve =
+                    listOf(
+                        clockAutoHideUri,
+                        iconHideListUri,
+                        statusBarClockUri,
+                        statusBarClockChipUri,
+                        gradientStartColorUri,
+                        gradientEndColorUri,
+                        gradientAngleUri,
+                        gradientMaskTextUri,
+                        gradientColorModeUri,
+                    )
                 urisToObserve.forEach { uri ->
                     context.contentResolver.registerContentObserver(
                         uri,
@@ -249,10 +327,25 @@ class HomeStatusBarViewBinderImpl @Inject constructor() : HomeStatusBarViewBinde
                     contentObserver.onChange(false, uri)
                 }
 
+                val accentCallbacks =
+                    object : ComponentCallbacks {
+                        override fun onConfigurationChanged(newConfig: Configuration) {
+                            val accent = ClockChipGradientDrawable.accentColors(context)
+                            clockState.update {
+                                if (it.accentColors == accent) it else it.copy(accentColors = accent)
+                            }
+                        }
+
+                        @Deprecated("Deprecated in Java")
+                        override fun onLowMemory() {}
+                    }
+                context.applicationContext.registerComponentCallbacks(accentCallbacks)
+
                 // Ensure cleanup when lifecycle ends
                 val job = coroutineContext[Job]
                 job?.invokeOnCompletion {
                     runCatching {
+                        context.applicationContext.unregisterComponentCallbacks(accentCallbacks)
                         context.contentResolver.unregisterContentObserver(contentObserver)
                         TaskStackChangeListeners.getInstance()
                             .unregisterTaskStackListener(taskStackListener)
@@ -343,6 +436,10 @@ class HomeStatusBarViewBinderImpl @Inject constructor() : HomeStatusBarViewBinde
                     launch {
                         var lastChipStyle: Int? = null
                         var lastClockPosition: Int? = null
+                        var lastGradientStartColor: Int? = null
+                        var lastGradientEndColor: Int? = null
+                        var lastGradientAngle: Float? = null
+                        var lastGradientMaskText: Boolean? = null
 
                         clockState.collect { state ->
                             // We only want to hide left clock for HUN
@@ -379,9 +476,24 @@ class HomeStatusBarViewBinderImpl @Inject constructor() : HomeStatusBarViewBinde
                             // Show only the active one
                             activeClock.adjustVisibility(finalVisibility)
 
-                            // Only touch chip UI when needed
+                            // Only touch chip UI when needed. Compare resolved colours so auto
+                            // mode only re-applies when the accent actually changes.
+                            val (gradientStart, gradientEnd) =
+                                ClockChipGradientDrawable.resolveColors(
+                                    colorMode = state.gradientColorMode,
+                                    customStart = state.gradientStartColor,
+                                    customEnd = state.gradientEndColor,
+                                    accent = state.accentColors,
+                                )
+                            val gradientParamsChanged =
+                                state.chipStyle == CHIP_STYLE_CUSTOM_GRADIENT &&
+                                    (lastGradientStartColor != gradientStart ||
+                                        lastGradientEndColor != gradientEnd ||
+                                        lastGradientAngle != state.gradientAngle ||
+                                        lastGradientMaskText != state.gradientMaskText)
                             val chipNeedsUpdate = (lastChipStyle != state.chipStyle)
                                         || (lastClockPosition != state.position)
+                                        || gradientParamsChanged
                             if (chipNeedsUpdate) {
                                 applyClockChip(
                                     context = context,
@@ -392,10 +504,18 @@ class HomeStatusBarViewBinderImpl @Inject constructor() : HomeStatusBarViewBinde
                                     rightClock = rightClock,
                                     leftPaddingInit = leftPaddingInit,
                                     centerPaddingInit = centerPaddingInit,
-                                    rightPaddingInit = rightPaddingInit
+                                    rightPaddingInit = rightPaddingInit,
+                                    gradientStartColor = gradientStart,
+                                    gradientEndColor = gradientEnd,
+                                    gradientAngle = state.gradientAngle,
+                                    gradientMaskText = state.gradientMaskText,
                                 )
                                 lastChipStyle = state.chipStyle
                                 lastClockPosition = state.position
+                                lastGradientStartColor = gradientStart
+                                lastGradientEndColor = gradientEnd
+                                lastGradientAngle = state.gradientAngle
+                                lastGradientMaskText = state.gradientMaskText
                             }
                         }
                     }
@@ -405,7 +525,20 @@ class HomeStatusBarViewBinderImpl @Inject constructor() : HomeStatusBarViewBinde
                     viewModel.isNotificationIconContainerVisible.collect {
                         notificationIconsArea.adjustVisibility(it)
                         batteryBar.adjustVisibility(it)
-                        leftLogo.adjustVisibility(it)
+                    }
+                }
+
+                launch {
+                    viewModel.isStatusBarLogoVisible.collect {
+                        val allowed = it.visibility == View.VISIBLE
+                        leftLogo.setAllowedBySystem(allowed)
+                        if (leftLogo.isLogoEnabled()) {
+                            leftLogo.adjustVisibility(it)
+                        } else {
+                            // Logo disabled or placed on the end side: keep the empty view
+                            // out of the layout; LogoImage owns its visibility in that case.
+                            leftLogo.hide(View.GONE, shouldAnimateChange = false)
+                        }
                     }
                 }
 
@@ -454,6 +587,51 @@ class HomeStatusBarViewBinderImpl @Inject constructor() : HomeStatusBarViewBinde
             this,
             LineageSettings.System.STATUS_BAR_CLOCK,
             CLOCK_POSITION_LEFT,
+            UserHandle.USER_CURRENT,
+        )
+    }
+
+    private fun ContentResolver.readClockChipGradientStartColor(): Int {
+        return Settings.System.getIntForUser(
+            this,
+            Settings.System.STATUSBAR_CLOCK_CHIP_GRADIENT_START_COLOR,
+            DEFAULT_GRADIENT_START_COLOR,
+            UserHandle.USER_CURRENT,
+        )
+    }
+
+    private fun ContentResolver.readClockChipGradientEndColor(): Int {
+        return Settings.System.getIntForUser(
+            this,
+            Settings.System.STATUSBAR_CLOCK_CHIP_GRADIENT_END_COLOR,
+            DEFAULT_GRADIENT_END_COLOR,
+            UserHandle.USER_CURRENT,
+        )
+    }
+
+    private fun ContentResolver.readClockChipGradientAngle(): Float {
+        return Settings.System.getIntForUser(
+            this,
+            Settings.System.STATUSBAR_CLOCK_CHIP_GRADIENT_ANGLE,
+            DEFAULT_GRADIENT_ANGLE,
+            UserHandle.USER_CURRENT,
+        ).toFloat()
+    }
+
+    private fun ContentResolver.readClockChipGradientMaskText(): Boolean {
+        return Settings.System.getIntForUser(
+            this,
+            Settings.System.STATUSBAR_CLOCK_CHIP_GRADIENT_MASK_TEXT,
+            GRADIENT_TEXT_STYLE_NORMAL,
+            UserHandle.USER_CURRENT,
+        ) == GRADIENT_TEXT_STYLE_MASK
+    }
+
+    private fun ContentResolver.readClockChipGradientColorMode(): Int {
+        return Settings.System.getIntForUser(
+            this,
+            Settings.System.STATUSBAR_CLOCK_CHIP_GRADIENT_COLOR_MODE,
+            ClockChipGradientDrawable.COLOR_MODE_AUTO,
             UserHandle.USER_CURRENT,
         )
     }
@@ -527,13 +705,19 @@ class HomeStatusBarViewBinderImpl @Inject constructor() : HomeStatusBarViewBinde
         rightClock: Clock?,
         leftPaddingInit: Padding,
         centerPaddingInit: Padding?,
-        rightPaddingInit: Padding?
+        rightPaddingInit: Padding?,
+        gradientStartColor: Int,
+        gradientEndColor: Int,
+        gradientAngle: Float,
+        gradientMaskText: Boolean,
     ) {
         fun reset(clock: Clock?, padding: Padding?) {
             if (clock == null || padding == null) return
             clock.setBackgroundResource(0)
             clock.setPaddingRelative(padding.start, padding.top, padding.end, padding.bottom)
+            clock.setMaskTextMode(false)
             // Reset text color - Clock will handle it via DarkIconDispatcher
+            clock.setStaticColor(false)
         }
 
         fun apply(clock: Clock, style: Int) {
@@ -586,9 +770,48 @@ class HomeStatusBarViewBinderImpl @Inject constructor() : HomeStatusBarViewBinde
         reset(centerClock, centerPaddingInit)
         reset(rightClock, rightPaddingInit)
 
+        fun applyGradient(clock: Clock) {
+            val chipTopBottomPadding = context.resources.getDimensionPixelSize(
+                R.dimen.status_bar_clock_chip_tb_padding)
+            val chipLeftRightPadding = context.resources.getDimensionPixelSize(
+                R.dimen.status_bar_clock_chip_lr_padding)
+
+            clock.background = ClockChipGradientDrawable(
+                startColor = gradientStartColor,
+                endColor = gradientEndColor,
+                angleDeg = gradientAngle,
+            )
+            clock.setPadding(
+                chipLeftRightPadding,
+                chipTopBottomPadding,
+                chipLeftRightPadding,
+                chipTopBottomPadding
+            )
+            clock.setTextAlignment(View.TEXT_ALIGNMENT_CENTER)
+            clock.setStaticColor(true)
+            if (gradientMaskText) {
+                // Glyphs are punched out of the chip; an opaque colour gives a clean cut.
+                clock.setTextColor(Color.WHITE)
+                clock.setMaskTextMode(true)
+            } else {
+                clock.setTextColor(chipTextColorFor(gradientStartColor, gradientEndColor))
+            }
+        }
+
         if (chipStyle == 0) return
 
-        apply(activeClock, chipStyle)
+        if (chipStyle == CHIP_STYLE_CUSTOM_GRADIENT) {
+            applyGradient(activeClock)
+        } else {
+            apply(activeClock, chipStyle)
+        }
+    }
+
+    private fun chipTextColorFor(startColor: Int, endColor: Int): Int {
+        val mid = ColorUtils.setAlphaComponent(ColorUtils.blendARGB(startColor, endColor, 0.5f), 255)
+        val whiteContrast = ColorUtils.calculateContrast(Color.WHITE, mid)
+        val blackContrast = ColorUtils.calculateContrast(Color.BLACK, mid)
+        return if (whiteContrast >= blackContrast) Color.WHITE else Color.BLACK
     }
 
     /**
@@ -653,6 +876,15 @@ class HomeStatusBarViewBinderImpl @Inject constructor() : HomeStatusBarViewBinde
     }
 
     companion object {
+        private const val CHIP_STYLE_CUSTOM_GRADIENT = 13
+
+        private const val GRADIENT_TEXT_STYLE_NORMAL = 0
+        private const val GRADIENT_TEXT_STYLE_MASK = 1
+
+        private const val DEFAULT_GRADIENT_START_COLOR = 0xFFFF6B6B.toInt()
+        private const val DEFAULT_GRADIENT_END_COLOR = 0xFF4ECDC4.toInt()
+        private const val DEFAULT_GRADIENT_ANGLE = 0
+
         private const val CLOCK_POSITION_RIGHT = 0
         private const val CLOCK_POSITION_CENTER = 1
         private const val CLOCK_POSITION_LEFT = 2

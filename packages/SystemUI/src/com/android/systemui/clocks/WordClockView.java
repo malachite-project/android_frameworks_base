@@ -37,6 +37,12 @@ public class WordClockView extends TextView {
 
     private void init() {
         updateClock();
+    }
+
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        handler.removeCallbacks(updateTimeRunnable);
         handler.post(updateTimeRunnable);
     }
 

@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -37,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -46,10 +48,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.res.dimensionResource
 import com.android.compose.animation.Expandable
@@ -68,6 +68,9 @@ import com.android.systemui.axdynamicbar.shared.AlphaIconBg
 import com.android.systemui.axdynamicbar.shared.AlphaSecondary
 import com.android.systemui.axdynamicbar.shared.AlphaTertiary
 import com.android.systemui.axdynamicbar.shared.ChipHighlightWidth
+import com.android.systemui.axdynamicbar.shared.pillMorphAlpha
+import com.android.systemui.axdynamicbar.shared.rememberChipMorphScale
+import com.android.systemui.axdynamicbar.shared.boundsOnScreen
 import com.android.systemui.axdynamicbar.shared.islandBlur
 import com.android.systemui.axdynamicbar.shared.PillPrimary
 import com.android.systemui.axdynamicbar.shared.ShapeXl
@@ -97,6 +100,7 @@ fun AxDynamicBarChip(
     viewModel: AxDynamicBarChipViewModel,
     modifier: Modifier = Modifier,
     ignoreKeyguard: Boolean = false,
+    island: android.graphics.Rect? = null,
 ) {
     val state by viewModel.chipState.collectAsStateWithLifecycle()
     val isOnKeyguard by viewModel.isOnKeyguard.collectAsStateWithLifecycle()
@@ -104,16 +108,19 @@ fun AxDynamicBarChip(
     
     val carrierName = if (isOnKeyguard && ignoreKeyguard) keyguardCarrier.takeIf { it.isNotBlank() } else null
     val chipTextMaxWidth = dimensionResource(R.dimen.ongoing_activity_chip_max_text_width)
-    val screenWidthPx = with(LocalDensity.current) {
-        LocalConfiguration.current.screenWidthDp.dp.toPx()
-    }
-
     val touchSlop = LocalViewConfiguration.current.touchSlop
+    val view = LocalView.current
     val expandableController = rememberExpandableController(color = Color.Transparent, shape = ChipShape)
     val expandableHolder = remember { arrayOfNulls<SystemUiExpandable>(1) }
     val currentState = rememberUpdatedState(state)
 
     val motionScheme = MaterialTheme.motionScheme
+
+    val isExpanded by viewModel.isExpanded.collectAsStateWithLifecycle()
+    val morphEnabled by viewModel.chipMorphEnabled.collectAsStateWithLifecycle()
+    val hasAlert = state?.notificationAlert != null
+    val morphScale = rememberChipMorphScale(morphEnabled && (isExpanded || hasAlert) && !ignoreKeyguard)
+    val morphAlpha by remember { derivedStateOf { pillMorphAlpha(morphScale.value) } }
 
     AnimatedVisibility(
         visible = state != null && (ignoreKeyguard || !isOnKeyguard),
@@ -148,6 +155,7 @@ fun AxDynamicBarChip(
                                     else viewModel.cycleNext()
                                 } else if (currentState.value != null) {
                                     change.consume()
+                                    viewModel.performTapHaptic(view)
                                     if (viewModel.chipTapClosesPanel(down.uptimeMillis)) {
                                         viewModel.statusBarExpansion.collapse()
                                     } else {
@@ -177,13 +185,6 @@ fun AxDynamicBarChip(
                             change.consume()
                         }
                     }
-                }
-            }
-            .onGloballyPositioned { coords ->
-                val bounds = coords.boundsInWindow()
-                val centerX = (bounds.left + bounds.right) / 2f
-                if (screenWidthPx > 0f) {
-                    viewModel.updateChipCenterX(centerX / screenWidthPx)
                 }
             },
     ) {
@@ -245,14 +246,31 @@ fun AxDynamicBarChip(
                         tier.chipCornerRadius, motionScheme.defaultSpatialSpec(), label = "chip_corner",
                     )
 
-                Box(
+                if (island != null) {
+                    IslandPill(
+                        event = event,
+                        isAlert = isAlert,
+                        hole = island,
+                        progress = progress,
+                        morphScale = { morphScale.value },
+                        morphAlpha = { morphAlpha },
+                        onPositioned = viewModel::updateChipBounds,
+                    )
+                } else Box(
                     modifier = Modifier.fillMaxHeight(),
                     contentAlignment = Alignment.Center,
                 ) {
                   Box(contentAlignment = Alignment.Center) {
                     Row(
                         modifier =
-                            Modifier.height(chipHeight)
+                            Modifier.onGloballyPositioned {
+                                    viewModel.updateChipBounds(it.boundsOnScreen(view))
+                                }
+                                .graphicsLayer {
+                                    scaleX = morphScale.value
+                                    alpha = morphAlpha
+                                }
+                                .height(chipHeight)
                                 .widthIn(max = 100.dp)
                                 .clip(RoundedCornerShape(chipCorner))
                                 // The frost is tinted with the accent itself: one coloured
@@ -261,7 +279,7 @@ fun AxDynamicBarChip(
                                     cornerRadius = chipCorner,
                                     fallbackColor = accent,
                                     tint = accent.copy(alpha = AlphaGlass),
-                                    alpha = visibilityBlurAlpha * contentBlurAlpha,
+                                    alpha = visibilityBlurAlpha * contentBlurAlpha * morphAlpha,
                                     highlightWidth = ChipHighlightWidth,
                                 )
                                 .then(

@@ -27,8 +27,8 @@ import com.android.systemui.keyguard.ui.view.layout.blueprints.transitions.Intra
 import com.android.systemui.keyguard.ui.view.layout.blueprints.transitions.IntraBlueprintTransition.Type
 import com.android.systemui.keyguard.ui.viewmodel.KeyguardClockViewModel
 import com.android.systemui.keyguard.ui.viewmodel.KeyguardSmartspaceViewModel
-import com.android.systemui.plugins.BcSmartspaceDataPlugin
 import com.android.systemui.lifecycle.repeatWhenAttached
+import com.android.systemui.plugins.BcSmartspaceDataPlugin
 import com.android.systemui.plugins.keyguard.VRectF
 import com.android.systemui.res.R
 import com.android.systemui.shared.R as sharedR

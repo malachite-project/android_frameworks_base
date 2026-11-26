@@ -80,8 +80,12 @@ public class NotificationBackgroundView extends View implements Dumpable,
     private final int convexR = 9;
     private final int concaveR = 22;
     private BackgroundBlurDrawable mBackgroundBlurDrawable;
-    @VisibleForTesting
-    protected View.OnAttachStateChangeListener mOnAttachStateChangeListener;
+    private boolean mBlurBackgroundEnabled;
+    // When true, the blur region is forced to alpha 0 (dropped from the aggregator) but kept around.
+    private boolean mBlurRegionSuppressed;
+    private boolean mBlurHiddenInShelf;
+    private int mBlurViewAlpha = 255;
+    private final Rect mBlurBounds = new Rect();
 
     // True only if the dismiss button is visible.
     private boolean mDrawDismissButtonCutout = false;
@@ -139,7 +143,7 @@ public class NotificationBackgroundView extends View implements Dumpable,
 
             if (!NotificationAddXOnHoverToDismiss.isEnabled()) {
                 if (mBackgroundBlurDrawable != null) {
-                    draw(canvas, mBackgroundBlurDrawable);
+                    drawBlur(canvas, null);
                 } else {
                     draw(canvas, mBackground);
                 }
@@ -157,8 +161,7 @@ public class NotificationBackgroundView extends View implements Dumpable,
                 canvas.clipPath(calculateDismissButtonCutoutPath(backgroundBounds));
             }
             if (mBackgroundBlurDrawable != null) {
-                mBackgroundBlurDrawable.setBounds(backgroundBounds);
-                mBackgroundBlurDrawable.draw(canvas);
+                drawBlur(canvas, backgroundBounds);
             } else if (mBackground != null) {
                 mBackground.setBounds(backgroundBounds);
                 mBackground.draw(canvas);
@@ -195,9 +198,34 @@ public class NotificationBackgroundView extends View implements Dumpable,
         return path;
     }
 
+    private void drawBlur(Canvas canvas, @Nullable Rect backgroundBounds) {
+        final Rect bounds = mBlurBounds;
+        if (backgroundBounds != null) {
+            bounds.set(backgroundBounds);
+        } else {
+            computeBackgroundBounds(bounds);
+        }
+        if (!mExpandAnimationRunning) {
+            bounds.top = Math.max(bounds.top, Math.max(mClipTopAmount, mTopOverlap));
+            bounds.bottom = Math.min(bounds.bottom,
+                    getActualHeight() - Math.max(mClipBottomAmount, mBottomOverlap));
+        }
+        if (bounds.isEmpty()) {
+            return;
+        }
+        mBackgroundBlurDrawable.setBounds(bounds);
+        mBackgroundBlurDrawable.draw(canvas);
+    }
+
     private Rect calculateBackgroundBounds() {
         NotificationAddXOnHoverToDismiss.isUnexpectedlyInLegacyMode();
 
+        final Rect bounds = new Rect();
+        computeBackgroundBounds(bounds);
+        return bounds;
+    }
+
+    private void computeBackgroundBounds(Rect out) {
         int top = 0;
         int bottom = getActualHeight();
         if (mBottomIsRounded
@@ -218,7 +246,7 @@ public class NotificationBackgroundView extends View implements Dumpable,
             right = (int) (left + actualWidth);
         }
 
-        return new Rect(left, top, right, bottom);
+        out.set(left, top, right, bottom);
     }
 
     /**
@@ -346,49 +374,99 @@ public class NotificationBackgroundView extends View implements Dumpable,
         }
         Assert.isMainThread();
 
-        if (enabled && mBackgroundBlurDrawable == null) {
-            if (mOnAttachStateChangeListener != null) {
-                removeOnAttachStateChangeListener(mOnAttachStateChangeListener);
-            }
-            mOnAttachStateChangeListener =
-                    new OnAttachStateChangeListener() {
-                        @Override
-                        public void onViewAttachedToWindow(View view) {
-                            if (mBackgroundBlurDrawable == null) {
-                                mBackgroundBlurDrawable =
-                                        view.getViewRootImpl().createBackgroundBlurDrawable();
-                                mBackgroundBlurDrawable.setBlurRadius(
-                                        getResources().getDimensionPixelSize(
-                                                R.dimen.notification_background_blur_radius));
-                                mBackgroundBlurDrawable.setXfermode(null);
-                                mBackgroundBlurDrawable.setCallback(
-                                        NotificationBackgroundView.this);
-                                mBackgroundBlurDrawable.setColor(mNormalColor);
-
-                                updateBackgroundRadii();
-                                invalidate();
-                            }
-                            NotificationBackgroundView.this.removeOnAttachStateChangeListener(this);
-                            mOnAttachStateChangeListener = null;
-                        }
-
-                        @Override
-                        public void onViewDetachedFromWindow(View view) {}
-                    };
-            addOnAttachStateChangeListener(mOnAttachStateChangeListener);
-
+        if (mBlurBackgroundEnabled == enabled) {
+            return;
+        }
+        mBlurBackgroundEnabled = enabled;
+        if (enabled) {
             if (isAttachedToWindow()) {
-                mOnAttachStateChangeListener.onViewAttachedToWindow(this);
+                createBlurDrawable();
             }
-        } else if (!enabled) {
-            if (mOnAttachStateChangeListener != null) {
-                removeOnAttachStateChangeListener(mOnAttachStateChangeListener);
-                mOnAttachStateChangeListener = null;
-            }
-            if (mBackgroundBlurDrawable != null) {
-                mBackgroundBlurDrawable.setCallback(null);
-            }
-            mBackgroundBlurDrawable = null;
+            // Otherwise created in onAttachedToWindow.
+        } else {
+            releaseBlurDrawable();
+        }
+    }
+
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        if (mBlurBackgroundEnabled) {
+            createBlurDrawable();
+        }
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        releaseBlurDrawable();
+        super.onDetachedFromWindow();
+    }
+
+    @Override
+    public void onVisibilityAggregated(boolean isVisible) {
+        super.onVisibilityAggregated(isVisible);
+        if (mBackgroundBlurDrawable != null && mBackgroundBlurDrawable.isVisible() != isVisible) {
+            mBackgroundBlurDrawable.setVisible(isVisible, false);
+        }
+    }
+
+    private void createBlurDrawable() {
+        if (mBackgroundBlurDrawable != null || getViewRootImpl() == null) {
+            return;
+        }
+        mBackgroundBlurDrawable = getViewRootImpl().createBackgroundBlurDrawable();
+        mBackgroundBlurDrawable.setBlurRadius(
+                getResources().getDimensionPixelSize(R.dimen.notification_background_blur_radius));
+        mBackgroundBlurDrawable.setXfermode(null);
+        mBackgroundBlurDrawable.setCallback(this);
+        mBackgroundBlurDrawable.setColor(mTintColor != 0 ? mTintColor : mNormalColor);
+        if (!isAggregatedVisible()) {
+            mBackgroundBlurDrawable.setVisible(false, false);
+        }
+        updateBlurAlpha();
+        updateBackgroundRadii();
+        invalidate();
+    }
+
+    private void releaseBlurDrawable() {
+        if (mBackgroundBlurDrawable == null) {
+            return;
+        }
+        mBackgroundBlurDrawable.setVisible(false, false);
+        mBackgroundBlurDrawable.setCallback(null);
+        mBackgroundBlurDrawable = null;
+        invalidate();
+    }
+
+    private void updateBlurAlpha() {
+        if (mBackgroundBlurDrawable == null) {
+            return;
+        }
+        final int alpha = mBlurRegionSuppressed || mBlurHiddenInShelf
+                ? 0 : mDrawableAlpha * mBlurViewAlpha / 255;
+        mBackgroundBlurDrawable.setAlpha(alpha);
+    }
+
+    public void setBlurHiddenInShelf(boolean hidden) {
+        if (mBlurHiddenInShelf == hidden) {
+            return;
+        }
+        mBlurHiddenInShelf = hidden;
+        if (mBackgroundBlurDrawable != null) {
+            updateBlurAlpha();
+            invalidate();
+        }
+    }
+
+    public void setBlurViewAlpha(float alpha) {
+        final int blurViewAlpha = Math.round(Math.max(0f, Math.min(1f, alpha)) * 255);
+        if (mBlurViewAlpha == blurViewAlpha) {
+            return;
+        }
+        mBlurViewAlpha = blurViewAlpha;
+        if (mBackgroundBlurDrawable != null && !mExpandAnimationRunning) {
+            updateBlurAlpha();
+            invalidate();
         }
     }
 
@@ -507,8 +585,18 @@ public class NotificationBackgroundView extends View implements Dumpable,
             return;
         }
         mBackground.setAlpha(drawableAlpha);
+        updateBlurAlpha();
+    }
+
+    /** Drops the blur region without tearing down the drawable; blur regions ignore ancestor alpha. */
+    public void setBlurRegionSuppressed(boolean suppressed) {
+        if (mBlurRegionSuppressed == suppressed) {
+            return;
+        }
+        mBlurRegionSuppressed = suppressed;
         if (mBackgroundBlurDrawable != null) {
-            mBackgroundBlurDrawable.setAlpha(drawableAlpha);
+            updateBlurAlpha();
+            invalidate();
         }
     }
 

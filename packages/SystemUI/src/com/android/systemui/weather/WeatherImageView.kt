@@ -32,34 +32,42 @@ class WeatherImageView @JvmOverloads constructor(
     private val maxSizePx: Int =
         context.resources.getDimension(R.dimen.weather_image_max_size).toInt()
 
-    private val weatherViewController: WeatherViewController
+    // WeatherViewController cancels its scope in removeObserver(), so it can't be
+    // reused after a detach. Create a fresh one for every attach.
+    private var weatherViewController: WeatherViewController? = null
 
     init {
         visibility = View.GONE
-
-        val stubText = TextView(context)
-
-        weatherViewController = WeatherViewController(
-            context = context,
-            weatherIcon = this,
-            weatherTemp = stubText,
-            weatherInfoView = this,
-        )
     }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        weatherViewController.init()
+        weatherViewController?.removeObserver()
+        weatherViewController = WeatherViewController(
+            context = context,
+            weatherIcon = this,
+            weatherTemp = TextView(context),
+            weatherInfoView = this,
+        ).also { it.init() }
     }
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
-        weatherViewController.removeObserver()
+        weatherViewController?.removeObserver()
+        weatherViewController = null
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val width = maxSizePx.coerceAtMost(MeasureSpec.getSize(widthMeasureSpec))
-        val height = maxSizePx.coerceAtMost(MeasureSpec.getSize(heightMeasureSpec))
-        setMeasuredDimension(width, height)
+        setMeasuredDimension(
+            resolveDimension(widthMeasureSpec),
+            resolveDimension(heightMeasureSpec),
+        )
     }
+
+    private fun resolveDimension(measureSpec: Int): Int =
+        if (MeasureSpec.getMode(measureSpec) == MeasureSpec.UNSPECIFIED) {
+            maxSizePx
+        } else {
+            maxSizePx.coerceAtMost(MeasureSpec.getSize(measureSpec))
+        }
 }

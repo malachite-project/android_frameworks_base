@@ -3,6 +3,7 @@ package com.android.systemui.axdynamicbar.domain
 import android.database.ContentObserver
 import android.os.Handler
 import android.os.UserHandle
+import android.provider.Settings
 import com.android.systemui.axdynamicbar.model.IslandEvent
 import com.android.systemui.axdynamicbar.shared.EVENT_TYPE_IDS
 import com.android.systemui.dagger.SysUISingleton
@@ -20,11 +21,15 @@ class AxDynamicBarSettings @Inject constructor(
     private val secureSettings: SecureSettings,
 ) {
     companion object {
-        const val KEY_ENABLED = "ax_dynamic_bar_enabled"
-        const val KEY_EVENTS = "ax_dynamic_bar_events"
-        const val KEY_KEYGUARD_ENABLED = "ax_dynamic_bar_keyguard_enabled"
-        const val KEY_KEYGUARD_BATTERY_CHIP_MODE = "ax_dynamic_bar_keyguard_battery_chip_mode"
-        const val KEY_COMPACT_NOTIFICATIONS = "ax_dynamic_bar_compact_notifications"
+        const val KEY_ENABLED = Settings.Secure.AX_DYNAMIC_BAR_ENABLED
+        const val KEY_EVENTS = Settings.Secure.AX_DYNAMIC_BAR_EVENTS
+        const val KEY_KEYGUARD_ENABLED = Settings.Secure.AX_DYNAMIC_BAR_KEYGUARD_ENABLED
+        const val KEY_KEYGUARD_BATTERY_CHIP_MODE =
+            Settings.Secure.AX_DYNAMIC_BAR_KEYGUARD_BATTERY_CHIP_MODE
+        const val KEY_COMPACT_NOTIFICATIONS = Settings.Secure.AX_DYNAMIC_BAR_COMPACT_NOTIFICATIONS
+        const val KEY_HAPTICS = Settings.Secure.AX_DYNAMIC_BAR_HAPTICS
+        const val KEY_CHIP_MORPH = Settings.Secure.AX_DYNAMIC_BAR_CHIP_MORPH
+        const val KEY_CENTER_ISLAND = Settings.Secure.AX_DYNAMIC_BAR_CENTER_ISLAND
     }
 
     private val _isEnabled = MutableStateFlow(false)
@@ -38,6 +43,15 @@ class AxDynamicBarSettings @Inject constructor(
 
     private val _compactNotifications = MutableStateFlow(true)
     val compactNotifications: StateFlow<Boolean> = _compactNotifications.asStateFlow()
+
+    private val _hapticsEnabled = MutableStateFlow(true)
+    val hapticsEnabled: StateFlow<Boolean> = _hapticsEnabled.asStateFlow()
+
+    private val _chipMorphEnabled = MutableStateFlow(true)
+    val chipMorphEnabled: StateFlow<Boolean> = _chipMorphEnabled.asStateFlow()
+
+    private val _centerIsland = MutableStateFlow(false)
+    val centerIsland: StateFlow<Boolean> = _centerIsland.asStateFlow()
 
     private val _disabledEventTypes = MutableStateFlow<Set<String>>(emptySet())
     val disabledEventTypes: StateFlow<Set<String>> = _disabledEventTypes.asStateFlow()
@@ -89,6 +103,24 @@ class AxDynamicBarSettings @Inject constructor(
             settingsObserver,
             UserHandle.USER_ALL,
         )
+        secureSettings.registerContentObserverForUserSync(
+            KEY_HAPTICS,
+            false,
+            settingsObserver,
+            UserHandle.USER_ALL,
+        )
+        secureSettings.registerContentObserverForUserSync(
+            KEY_CHIP_MORPH,
+            false,
+            settingsObserver,
+            UserHandle.USER_ALL,
+        )
+        secureSettings.registerContentObserverForUserSync(
+            KEY_CENTER_ISLAND,
+            false,
+            settingsObserver,
+            UserHandle.USER_ALL,
+        )
     }
 
     fun destroy() {
@@ -106,6 +138,12 @@ class AxDynamicBarSettings @Inject constructor(
             secureSettings.getIntForUser(KEY_KEYGUARD_BATTERY_CHIP_MODE, 1, UserHandle.USER_CURRENT)
         _compactNotifications.value =
             secureSettings.getIntForUser(KEY_COMPACT_NOTIFICATIONS, 1, UserHandle.USER_CURRENT) == 1
+        _hapticsEnabled.value =
+            secureSettings.getIntForUser(KEY_HAPTICS, 1, UserHandle.USER_CURRENT) == 1
+        _chipMorphEnabled.value =
+            secureSettings.getIntForUser(KEY_CHIP_MORPH, 1, UserHandle.USER_CURRENT) == 1
+        _centerIsland.value =
+            secureSettings.getIntForUser(KEY_CENTER_ISLAND, 0, UserHandle.USER_CURRENT) == 1
 
         val json = secureSettings.getStringForUser(KEY_EVENTS, UserHandle.USER_CURRENT) ?: ""
         _disabledEventTypes.value =

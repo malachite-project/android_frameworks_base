@@ -381,7 +381,7 @@ public abstract class ActivatableNotificationView extends ExpandableOutlineView 
     }
 
     protected boolean usesBlurredBackground() {
-        return usesTransparentBackground() && lockscreenBlurForNotifications();
+        return mOnKeyguard && usesTransparentBackground() && lockscreenBlurForNotifications();
     }
 
     protected boolean usesTransparentBackground() {
@@ -890,7 +890,29 @@ public abstract class ActivatableNotificationView extends ExpandableOutlineView 
         mBackgroundNormal.setOnKeyguard(mOnKeyguard);
         if (mIsBlurSupported) {
             updateBackgroundTint();
+            mBackgroundNormal.setBlurBackgroundEnabled(usesBlurredBackground());
         }
+    }
+
+    @Override
+    public void setInShelf(boolean inShelf) {
+        super.setInShelf(inShelf);
+        if (mBackgroundNormal != null) {
+            mBackgroundNormal.setBlurHiddenInShelf(inShelf);
+        }
+    }
+
+    @Override
+    public void setAlpha(float alpha) {
+        super.setAlpha(alpha);
+        if (mBackgroundNormal != null) {
+            mBackgroundNormal.setBlurViewAlpha(alpha);
+        }
+    }
+
+    /** Suppresses/restores this row's background blur region while the stack is faded out. */
+    public void setBlurRegionSuppressed(boolean suppressed) {
+        mBackgroundNormal.setBlurRegionSuppressed(suppressed);
     }
 
     /**

@@ -7067,6 +7067,36 @@ public final class Settings {
         public static final String STATUSBAR_CLOCK_CHIP = "statusbar_clock_chip";
 
         /**
+         * Clock chip gradient color mode
+         * @hide
+         */
+        public static final String STATUSBAR_CLOCK_CHIP_GRADIENT_COLOR_MODE = "statusbar_clock_chip_gradient_color_mode";
+
+        /**
+         * Clock chip custom gradient – start
+         * @hide
+         */
+        public static final String STATUSBAR_CLOCK_CHIP_GRADIENT_START_COLOR = "statusbar_clock_chip_gradient_start_color";
+
+        /**
+         * Clock chip custom gradient – end
+         * @hide
+         */
+        public static final String STATUSBAR_CLOCK_CHIP_GRADIENT_END_COLOR = "statusbar_clock_chip_gradient_end_color";
+
+        /**
+         * Clock chip custom gradient – angle
+         * @hide
+         */
+        public static final String STATUSBAR_CLOCK_CHIP_GRADIENT_ANGLE = "statusbar_clock_chip_gradient_angle";
+
+        /**
+         * Clock chip custom gradient – mask text
+         * @hide
+         */
+        public static final String STATUSBAR_CLOCK_CHIP_GRADIENT_MASK_TEXT = "statusbar_clock_chip_gradient_mask_text";
+
+        /**
          * Double tap on lockscreen to sleep
          * @hide
          */
@@ -7526,7 +7556,11 @@ public final class Settings {
         public static final String QS_BRIGHTNESS_SLIDER_HAPTIC = "qs_brightness_slider_haptic";
 
         /**
-         * Volume slider next to brightness slider
+         * Volume slider in the QS brightness row
+         * 0 - brightness only
+         * 1 - volume beside brightness (default)
+         * 2 - volume only
+         * 3 - volume below brightness
          * @hide
          */
         public static final String QS_SHOW_VOLUME_SLIDER = "qs_show_volume_slider";
@@ -7730,6 +7764,14 @@ public final class Settings {
          * @hide
          */
         public static final String CUSTOM_GRADIENT_END_COLOR = "custom_gradient_end_color";
+
+        /**
+         * Gradient angle in degrees (0 - 360), counter-clockwise.
+         * 0 = start -> end (left -> right on tiles and buttons, along the fill direction
+         * on sliders), rotated counter-clockwise from there
+         * @hide
+         */
+        public static final String CUSTOM_GRADIENT_ANGLE = "custom_gradient_angle";
 
         /**
          * @hide
@@ -14841,6 +14883,57 @@ public final class Settings {
          * @hide
          */
         public static final String BATTERY_SAVER_DARK_THEME = "battery_saver_dark_theme";
+
+        /**
+         * Whether the Dynamic Bar is enabled
+         * @hide
+         */
+        public static final String AX_DYNAMIC_BAR_ENABLED = "ax_dynamic_bar_enabled";
+
+        /**
+         * JSON array of Dynamic Bar event types that are disabled
+         * @hide
+         */
+        public static final String AX_DYNAMIC_BAR_EVENTS = "ax_dynamic_bar_events";
+
+        /**
+         * Whether the Dynamic Bar chip is shown on the lock screen
+         * @hide
+         */
+        public static final String AX_DYNAMIC_BAR_KEYGUARD_ENABLED =
+                "ax_dynamic_bar_keyguard_enabled";
+
+        /**
+         * Battery info mode of the Dynamic Bar chip on the lock screen
+         * @hide
+         */
+        public static final String AX_DYNAMIC_BAR_KEYGUARD_BATTERY_CHIP_MODE =
+                "ax_dynamic_bar_keyguard_battery_chip_mode";
+
+        /**
+         * Whether Dynamic Bar notifications are shown as a compact chip first
+         * @hide
+         */
+        public static final String AX_DYNAMIC_BAR_COMPACT_NOTIFICATIONS =
+                "ax_dynamic_bar_compact_notifications";
+
+        /**
+         * Whether tapping the Dynamic Bar chip performs haptic feedback
+         * @hide
+         */
+        public static final String AX_DYNAMIC_BAR_HAPTICS = "ax_dynamic_bar_haptics";
+
+        /**
+         * Whether the Dynamic Bar chip morphs into its expanded panel
+         * @hide
+         */
+        public static final String AX_DYNAMIC_BAR_CHIP_MORPH = "ax_dynamic_bar_chip_morph";
+
+        /**
+         * Whether the Dynamic Bar sits over a centred top camera cutout as an island
+         * @hide
+         */
+        public static final String AX_DYNAMIC_BAR_CENTER_ISLAND = "ax_dynamic_bar_center_island";
 
         /**
          * Keys we no longer back up under the current schema, but want to continue to

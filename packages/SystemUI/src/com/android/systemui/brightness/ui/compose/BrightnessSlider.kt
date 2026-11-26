@@ -75,6 +75,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -84,7 +85,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.painter.BitmapPainter
@@ -92,6 +92,7 @@ import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.painterResource
@@ -124,10 +125,9 @@ import com.android.systemui.common.shared.colors.SystemUISliderColors
 import com.android.systemui.common.shared.model.Icon
 import com.android.systemui.compose.modifiers.sysuiResTag
 import com.android.systemui.gradient.GradientColors
-import com.android.systemui.gradient.diagonal
-import com.android.systemui.gradient.horizontal
-import com.android.systemui.gradient.rememberGradientColors
-import com.android.systemui.gradient.rememberGradientEnabled
+import com.android.systemui.gradient.brush
+import com.android.systemui.gradient.drawActiveTrackGradient
+import com.android.systemui.gradient.rememberGradient
 import com.android.systemui.gradient.toPath
 import com.android.systemui.haptics.slider.SeekableSliderTrackerConfig
 import com.android.systemui.haptics.slider.SliderHapticFeedbackConfig
@@ -170,8 +170,8 @@ fun BrightnessSlider(
     val shapeMode = rememberSliderShapeMode()
     val trackCornerDp: Dp = trackCornerFor(shapeMode)
 
-    val isGradientEnabled = rememberGradientEnabled(Settings.System.QS_BRIGHTNESS_SLIDER_GRADIENT)
-    val gradientColors: GradientColors? = rememberGradientColors().takeIf { isGradientEnabled }
+    val gradientColors: GradientColors? =
+        rememberGradient(Settings.System.QS_BRIGHTNESS_SLIDER_GRADIENT)
 
     var value by remember(gammaValue) { mutableIntStateOf(gammaValue) }
     val animatedValue by
@@ -389,31 +389,19 @@ fun BrightnessSlider(
                                         .toPath()
                                 val isRtl = layoutDirection == LayoutDirection.Rtl
                                 val gradientBrush: Brush? =
-                                    gradientColors?.horizontal(reversed = isRtl)
+                                    gradientColors?.brush(mirrored = isRtl)
 
                                 onDrawWithContent {
                                     drawContent()
 
                                     if (gradientBrush != null) {
-                                        val gapPx = ThumbTrackGapSize.toPx()
-                                        val activeWidth =
-                                            (size.width * sliderState.coercedValueAsFraction -
-                                                    gapPx)
-                                                .coerceIn(0f, size.width)
-                                        if (activeWidth > 0f) {
-                                            clipPath(trackPath) {
-                                                drawRect(
-                                                    brush = gradientBrush,
-                                                    topLeft =
-                                                        if (isRtl) {
-                                                            Offset(size.width - activeWidth, 0f)
-                                                        } else {
-                                                            Offset.Zero
-                                                        },
-                                                    size = Size(activeWidth, size.height),
-                                                )
-                                            }
-                                        }
+                                        drawActiveTrackGradient(
+                                            brush = gradientBrush,
+                                            trackPath = trackPath,
+                                            fraction = sliderState.coercedValueAsFraction,
+                                            gapPx = ThumbTrackGapSize.toPx(),
+                                            isRtl = isRtl,
+                                        )
                                     }
 
                                     val yOffset = size.height / 2 - iconSize.toSize().height / 2
@@ -515,8 +503,9 @@ private fun VolumeSlider(
     val shapeMode = rememberSliderShapeMode()
     val trackCornerDp: Dp = trackCornerFor(shapeMode)
 
-    val isGradientEnabled = rememberGradientEnabled(Settings.System.QS_BRIGHTNESS_SLIDER_GRADIENT)
-    val gradientColors: GradientColors? = rememberGradientColors().takeIf { isGradientEnabled }
+    // Shares the brightness slider gradient so both QS sliders always match.
+    val gradientColors: GradientColors? =
+        rememberGradient(Settings.System.QS_BRIGHTNESS_SLIDER_GRADIENT)
 
     val baseColors = SystemUISliderColors.Defaults
     val colors =
@@ -538,9 +527,7 @@ private fun VolumeSlider(
     var dragging by remember { mutableStateOf(false) }
     var systemVolume by
         remember(audioManager) {
-            mutableIntStateOf(
-                runCatching { audioManager?.getStreamVolume(streamType) }.getOrNull() ?: minVolume
-            )
+            mutableIntStateOf(readStreamVolume(audioManager, streamType) ?: minVolume)
         }
     var value by remember(audioManager) { mutableIntStateOf(systemVolume) }
 
@@ -556,23 +543,35 @@ private fun VolumeSlider(
         val receiver =
             object : BroadcastReceiver() {
                 override fun onReceive(c: Context?, intent: Intent?) {
-                    if (intent?.action == AudioManager.VOLUME_CHANGED_ACTION) {
-                        val type = intent.getIntExtra(AudioManager.EXTRA_VOLUME_STREAM_TYPE, -1)
-                        if (type == streamType) {
-                            systemVolume =
-                                intent.getIntExtra(
-                                    AudioManager.EXTRA_VOLUME_STREAM_VALUE,
-                                    systemVolume,
-                                )
-                        }
+                    val type = intent?.getIntExtra(AudioManager.EXTRA_VOLUME_STREAM_TYPE, -1)
+                    when (intent?.action) {
+                        AudioManager.VOLUME_CHANGED_ACTION ->
+                            if (type == streamType) {
+                                systemVolume =
+                                    intent.getIntExtra(
+                                        AudioManager.EXTRA_VOLUME_STREAM_VALUE,
+                                        systemVolume,
+                                    )
+                            }
+                        // Muting and output device switches (e.g. headphones) change the index
+                        // without a VOLUME_CHANGED_ACTION, so read it back.
+                        AudioManager.STREAM_MUTE_CHANGED_ACTION,
+                        AudioManager.STREAM_DEVICES_CHANGED_ACTION ->
+                            if (type == streamType) {
+                                readStreamVolume(audioManager, streamType)?.let {
+                                    systemVolume = it
+                                }
+                            }
                     }
                 }
             }
-        context.registerReceiver(
-            receiver,
-            IntentFilter(AudioManager.VOLUME_CHANGED_ACTION),
-            Context.RECEIVER_NOT_EXPORTED,
-        )
+        val filter =
+            IntentFilter().apply {
+                addAction(AudioManager.VOLUME_CHANGED_ACTION)
+                addAction(AudioManager.STREAM_MUTE_CHANGED_ACTION)
+                addAction(AudioManager.STREAM_DEVICES_CHANGED_ACTION)
+            }
+        context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
 
         val hapticsObserver =
             object : ContentObserver(null) {
@@ -594,10 +593,11 @@ private fun VolumeSlider(
     }
 
     LaunchedEffect(audioManager) {
-        runCatching { audioManager?.getStreamVolume(streamType) }.getOrNull()?.let {
-            systemVolume = it
-        }
+        // Catch changes between the initial read and the receiver registration.
+        readStreamVolume(audioManager, streamType)?.let { systemVolume = it }
     }
+    val isVolumeFixed =
+        remember(audioManager) { runCatching { audioManager?.isVolumeFixed }.getOrNull() == true }
 
     val interactionSource = remember { MutableInteractionSource() }
     val hapticsViewModel: SliderHapticsViewModel? =
@@ -644,7 +644,7 @@ private fun VolumeSlider(
         Slider(
             value = animatedValue,
             valueRange = floatValueRange,
-            enabled = true,
+            enabled = !isVolumeFixed,
             colors = colors,
             onValueChange = {
                 dragging = true
@@ -674,7 +674,7 @@ private fun VolumeSlider(
             thumb = {
                 SliderDefaults.Thumb(
                     interactionSource = interactionSource,
-                    enabled = true,
+                    enabled = !isVolumeFixed,
                     thumbSize = DpSize(dimensions.thumbWidth, dimensions.thumbHeight),
                     colors = thumbColors,
                 )
@@ -719,31 +719,19 @@ private fun VolumeSlider(
                                     .createOutline(size, layoutDirection, this)
                                     .toPath()
                             val isRtl = layoutDirection == LayoutDirection.Rtl
-                            val gradientBrush: Brush? =
-                                gradientColors?.horizontal(reversed = isRtl)
+                            val gradientBrush: Brush? = gradientColors?.brush(mirrored = isRtl)
 
                             onDrawWithContent {
                                 drawContent()
 
                                 if (gradientBrush != null) {
-                                    val gapPx = ThumbTrackGapSize.toPx()
-                                    val activeWidth =
-                                        (size.width * sliderState.coercedValueAsFraction - gapPx)
-                                            .coerceIn(0f, size.width)
-                                    if (activeWidth > 0f) {
-                                        clipPath(trackPath) {
-                                            drawRect(
-                                                brush = gradientBrush,
-                                                topLeft =
-                                                    if (isRtl) {
-                                                        Offset(size.width - activeWidth, 0f)
-                                                    } else {
-                                                        Offset.Zero
-                                                    },
-                                                size = Size(activeWidth, size.height),
-                                            )
-                                        }
-                                    }
+                                    drawActiveTrackGradient(
+                                        brush = gradientBrush,
+                                        trackPath = trackPath,
+                                        fraction = sliderState.coercedValueAsFraction,
+                                        gapPx = ThumbTrackGapSize.toPx(),
+                                        isRtl = isRtl,
+                                    )
                                 }
 
                                 val yOffset = size.height / 2 - iconSize.toSize().height / 2
@@ -840,7 +828,15 @@ private fun VolumeRingerButton(
     }
 
     val isOn = ringerMode != AudioManager.RINGER_MODE_SILENT
-    val ringerBrush: Brush? = if (isOn) gradientColors?.diagonal() else null
+    val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    val ringerBrush: Brush? =
+        remember(gradientColors, isRtl) { gradientColors?.brush(mirrored = isRtl) }
+    // Fade the gradient along with the background color instead of popping it in/out.
+    val ringerBrushAlpha by
+        animateFloatAsState(
+            targetValue = if (isOn && ringerBrush != null) 1f else 0f,
+            label = "RingerGradientAlpha",
+        )
 
     val backgroundColor by
         animateColorAsState(
@@ -879,8 +875,6 @@ private fun VolumeRingerButton(
             AudioManager.RINGER_MODE_SILENT -> R.drawable.ic_speaker_mute
             else -> R.drawable.ic_speaker_on
         }
-    val hapticConstant =
-        if (isOn) HapticFeedbackConstants.TOGGLE_ON else HapticFeedbackConstants.TOGGLE_OFF
     val contentDescription =
         when (ringerMode) {
             AudioManager.RINGER_MODE_VIBRATE -> stringResource(R.string.accessibility_ringer_vibrate)
@@ -890,19 +884,34 @@ private fun VolumeRingerButton(
 
     IconButton(
         onClick = {
-            if (hapticsEnabled) {
-                view.performHapticFeedback(hapticConstant)
-            }
             val next = nextRingerMode(ringerMode, hasVibrator)
+            if (hapticsEnabled) {
+                // Haptic reflects the mode being switched to, like the auto brightness button.
+                view.performHapticFeedback(
+                    if (next == AudioManager.RINGER_MODE_SILENT) {
+                        HapticFeedbackConstants.TOGGLE_OFF
+                    } else {
+                        HapticFeedbackConstants.TOGGLE_ON
+                    }
+                )
+            }
             // Can throw when DND policy access is not granted; fall back to the real state.
-            val applied = runCatching { audioManager?.ringerModeInternal = next }.isSuccess
+            val applied =
+                audioManager != null &&
+                    runCatching { audioManager.ringerModeInternal = next }.isSuccess
             ringerMode = if (applied) next else readRingerMode(audioManager)
         },
         modifier =
             Modifier.size(buttonSize)
                 .clip(ringerShape)
                 .background(backgroundColor)
-                .thenIf(ringerBrush != null) { Modifier.background(ringerBrush!!) },
+                .thenIf(ringerBrush != null) {
+                    Modifier.drawBehind {
+                        if (ringerBrushAlpha > 0f) {
+                            drawRect(brush = ringerBrush!!, alpha = ringerBrushAlpha)
+                        }
+                    }
+                },
     ) {
         Icon(
             painter = painterResource(painterRes),
@@ -1089,6 +1098,9 @@ private fun readShowRingerMode(cr: ContentResolver): Boolean =
         true
     }
 
+private fun readStreamVolume(audioManager: AudioManager?, streamType: Int): Int? =
+    runCatching { audioManager?.getStreamVolume(streamType) }.getOrNull()
+
 private fun readRingerMode(audioManager: AudioManager?): Int =
     runCatching { audioManager?.ringerModeInternal }.getOrNull()
         ?: AudioManager.RINGER_MODE_NORMAL
@@ -1122,7 +1134,14 @@ private fun drawAutoBrightnessButton(
 ) {
     val view = LocalView.current
     val coroutineScope = rememberCoroutineScope()
-    val autoBrush: Brush? = if (autoMode) gradientColors?.diagonal() else null
+    val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    val autoBrush: Brush? =
+        remember(gradientColors, isRtl) { gradientColors?.brush(mirrored = isRtl) }
+    val autoBrushAlpha by
+        animateFloatAsState(
+            targetValue = if (autoMode && autoBrush != null) 1f else 0f,
+            label = "AutoBrightnessGradientAlpha",
+        )
     val backgroundColor by animateColorAsState(
         targetValue = if (autoMode) {
             MaterialTheme.colorScheme.primary
@@ -1174,7 +1193,9 @@ private fun drawAutoBrightnessButton(
             .clip(autoIconShape)
             .background(backgroundColor)
             .thenIf(autoBrush != null) {
-                Modifier.background(autoBrush!!)
+                Modifier.drawBehind {
+                    if (autoBrushAlpha > 0f) drawRect(brush = autoBrush!!, alpha = autoBrushAlpha)
+                }
             }
     ) {
         Icon(
@@ -1197,13 +1218,14 @@ fun BrightnessSliderContainer(
     val wantsVolume = volumeSliderMode != VolumeSliderMode.OFF
 
     val gamma = viewModel.currentBrightness.value
-    // Ignore initial negative value, but keep rendering the volume slider if it is the only
-    // thing on screen (or while brightness is still settling).
+    // Ignore initial negative value. Wait for it whenever brightness is shown at all, otherwise
+    // the volume slider would briefly take the whole row and then jump to half width (BESIDE) or
+    // move down (BELOW) once brightness settles. Volume-only mode doesn't need to wait.
     val brightnessReady = gamma != BrightnessSliderViewModel.initialValue.value
-    if (!brightnessReady && !wantsVolume) {
+    if (wantsBrightness && !brightnessReady) {
         return
     }
-    val showBrightness = wantsBrightness && brightnessReady
+    val showBrightness = wantsBrightness
 
     val autoMode = viewModel.autoMode
     val context = LocalContext.current

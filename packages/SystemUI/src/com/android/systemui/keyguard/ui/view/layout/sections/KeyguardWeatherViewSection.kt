@@ -26,8 +26,9 @@ import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.constraintlayout.widget.ConstraintSet
 import com.android.systemui.customization.clocks.R as clocksR
 import com.android.systemui.keyguard.shared.model.KeyguardSection
+import com.android.systemui.keyguard.ui.viewmodel.KeyguardSmartspaceViewModel
 import com.android.systemui.res.R
-import com.android.systemui.shared.R as sharedR
+import com.android.systemui.shade.ShadeDisplayAware
 import com.android.systemui.statusbar.lockscreen.LockscreenSmartspaceController
 import javax.inject.Inject
 
@@ -36,28 +37,29 @@ import com.android.systemui.weather.WeatherInfoView
 class KeyguardWeatherViewSection
 @Inject
 constructor(
-    private val context: Context,
+    @ShadeDisplayAware private val context: Context,
     val layoutInflater: LayoutInflater,
     val smartspaceController: LockscreenSmartspaceController,
+    val keyguardSmartspaceViewModel: KeyguardSmartspaceViewModel,
 ) : KeyguardSection() {
-    private lateinit var weatherView: WeatherInfoView
+    // Non-null only while the weather area is inflated; the other callbacks follow it rather
+    // than the live settings, which may have changed since addViews().
+    private var weatherView: WeatherInfoView? = null
 
     override fun addViews(constraintLayout: ConstraintLayout) {
         if (!smartspaceController.isOmniWeatherEnabled || smartspaceController.isEnabled) return
 
         weatherView =
-            layoutInflater.inflate(R.layout.keyguard_weather_area, null, false) as WeatherInfoView
-        constraintLayout.addView(weatherView)
+            (layoutInflater.inflate(R.layout.keyguard_weather_area, null, false) as WeatherInfoView)
+                .also { constraintLayout.addView(it) }
     }
 
     override fun bindData(constraintLayout: ConstraintLayout) {
-        if (!smartspaceController.isOmniWeatherEnabled || smartspaceController.isEnabled) return
-
-        weatherView.init()
+        weatherView?.init()
     }
 
     override fun applyConstraints(constraintSet: ConstraintSet) {
-        if (!smartspaceController.isOmniWeatherEnabled || smartspaceController.isEnabled) return
+        if (weatherView == null) return
 
         constraintSet.apply {
             connect(
@@ -71,7 +73,11 @@ constructor(
             connect(
                 R.id.keyguard_weather_area,
                 ConstraintSet.END,
-                ConstraintSet.PARENT_ID,
+                if (keyguardSmartspaceViewModel.isFullWidthShade.value) {
+                    ConstraintSet.PARENT_ID
+                } else {
+                    R.id.split_shade_guideline
+                },
                 ConstraintSet.END
             )
             constrainHeight(R.id.keyguard_weather_area, ConstraintSet.WRAP_CONTENT)
@@ -83,35 +89,20 @@ constructor(
                 ConstraintSet.BOTTOM
             )
 
-            // UNIFIED BARRIER - Include ALL status area elements
-            createUnifiedBarrierAndNotificationConstraints(constraintSet)
-        }
-    }
-
-    private fun createUnifiedBarrierAndNotificationConstraints(constraintSet: ConstraintSet) {
-        constraintSet.apply {
-            // UNIFIED BARRIER - Include ALL status area elements
             createBarrier(
                 R.id.smart_space_barrier_bottom,
                 Barrier.BOTTOM,
                 0,
-                *intArrayOf(
-                    R.id.keyguard_slice_view,
-                    R.id.keyguard_weather_area,
-                    R.id.clock_ls,
-                    sharedR.id.bc_smartspace_view,
-                    sharedR.id.date_smartspace_view,
-                )
+                *intArrayOf(R.id.keyguard_slice_view, R.id.keyguard_weather_area)
             )
         }
     }
 
     override fun removeViews(constraintLayout: ConstraintLayout) {
-        if (!smartspaceController.isOmniWeatherEnabled || smartspaceController.isEnabled) return
-
-        constraintLayout.findViewById<WeatherInfoView?>(R.id.keyguard_weather_area)?.let { weatherArea ->
+        weatherView?.let { weatherArea ->
             weatherArea.cleanup()
             constraintLayout.removeView(weatherArea)
         }
+        weatherView = null
     }
 }

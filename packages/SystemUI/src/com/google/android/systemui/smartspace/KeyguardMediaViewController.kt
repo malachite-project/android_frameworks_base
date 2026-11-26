@@ -7,6 +7,7 @@ import android.content.Context
 import android.media.MediaMetadata
 import android.os.UserHandle
 import android.text.TextUtils
+import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Main
 import com.android.systemui.media.NotificationMediaManager
 import com.android.systemui.settings.UserTracker
@@ -15,6 +16,7 @@ import com.android.systemui.util.concurrency.DelayableExecutor
 import com.android.systemui.res.R
 import javax.inject.Inject
 
+@SysUISingleton
 class KeyguardMediaViewController
 @Inject
 constructor(
@@ -26,11 +28,7 @@ constructor(
 ) {
     var title: CharSequence? = null
     var artist: CharSequence? = null
-    lateinit var mediaComponent: ComponentName
-
-    init {
-        mediaComponent = ComponentName(context, KeyguardMediaViewController::class.java)
-    }
+    val mediaComponent = ComponentName(context, KeyguardMediaViewController::class.java)
 
     val mediaListener =
         object : NotificationMediaManager.MediaListener {

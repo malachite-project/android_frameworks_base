@@ -30,16 +30,24 @@ public class AnalogClockView extends View {
         init();
     }
 
+    private final Runnable mTickRunnable = new Runnable() {
+        @Override
+        public void run() {
+            invalidate(); // Redraw the view
+            handler.postDelayed(this, 1000); // Update every second
+        }
+    };
+
     private void init() {
         mPaint = new Paint();
         mPaint.setAntiAlias(true);  // Smooth edges
-        handler.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                invalidate(); // Redraw the view
-                handler.postDelayed(this, 1000); // Update every second
-            }
-        }, 1000);
+    }
+
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        handler.removeCallbacks(mTickRunnable);
+        handler.postDelayed(mTickRunnable, 1000);
     }
 
     @Override
@@ -95,6 +103,6 @@ public class AnalogClockView extends View {
     @Override
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
-        handler.removeCallbacksAndMessages(null); // Stop updates when detached
+        handler.removeCallbacks(mTickRunnable); // Stop updates when detached
     }
 }

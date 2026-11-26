@@ -1496,7 +1496,7 @@ public class CentralSurfacesImpl implements CoreStartable, CentralSurfaces,
     }
 
     @Override
-    public void brightnessControl(MotionEvent event) {
+    public boolean brightnessControl(MotionEvent event) {
         final int action = event.getAction();
         final int x = (int) event.getRawX();
         final int y = (int) event.getRawY();
@@ -1516,6 +1516,7 @@ public class CentralSurfacesImpl implements CoreStartable, CentralSurfaces,
             if (y < mQuickQsOffsetHeight) {
                 if (mLinger > BRIGHTNESS_CONTROL_LINGER_THRESHOLD) {
                     adjustBrightness(x);
+                    return true;
                 } else {
                     final int xDiff = Math.abs(x - mInitialTouchX);
                     final int yDiff = Math.abs(y - mInitialTouchY);
@@ -1538,15 +1539,13 @@ public class CentralSurfacesImpl implements CoreStartable, CentralSurfaces,
                 || action == MotionEvent.ACTION_CANCEL) {
             mMessageRouter.cancelMessages(MSG_LONG_PRESS_BRIGHTNESS_CHANGE);
         }
+        return false;
     }
 
     @Override
     public void onBrightnessChanged(boolean upOrCancel) {
         if (mBrightnessChanged && upOrCancel) {
             mBrightnessChanged = false;
-            if (mShadeController.isExpandedVisible()) {
-                getNotificationShadeWindowViewController().fling(10, false, false);
-            }
             mDisplayManager.setBrightness(mDisplayId, mCurrentBrightness);
         }
     }

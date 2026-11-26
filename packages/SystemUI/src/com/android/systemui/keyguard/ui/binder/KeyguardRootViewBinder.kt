@@ -282,7 +282,6 @@ object KeyguardRootViewBinder {
                         viewModel.burnInLayerVisibility.collect { visibility ->
                             childViews[burnInLayerId]?.visibility = visibility
                             childViews[sliceViewId]?.visibility = visibility
-                            childViews[weatherAreaId]?.visibility = visibility
                         }
                     }
 
