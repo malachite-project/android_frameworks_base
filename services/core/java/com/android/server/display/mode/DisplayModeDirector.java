@@ -1925,6 +1925,9 @@ public class DisplayModeDirector {
         // changeable and low power mode off. After initialization, these states will
         // be updated from the same handler thread.
         private int mDefaultDisplayState = Display.STATE_UNKNOWN;
+        // The default display's lowest refresh rate, asked for while it dozes (AOD).
+        // Read from the Display outside mLock, in updateDefaultDisplayState().
+        private volatile float mDozeRefreshRate = 0f;
         private boolean mRefreshRateChangeable = false;
         private boolean mLowPowerModeEnabled = false;
 
@@ -2567,6 +2570,23 @@ public class DisplayModeDirector {
             }
 
             if (mDefaultDisplayState != Display.STATE_UNKNOWN && !isDeviceActive()) {
+                if (Display.isDozeState(mDefaultDisplayState) && mDozeRefreshRate > 0f) {
+                    // AOD brightness is below every low-zone threshold, so the zone vote
+                    // would hold the always-on display at the peak rate, switching
+                    // disabled, for hours. Ask for the lowest rate instead, at the
+                    // flicker priority, so a forced peak (user minimum) still wins. Voted
+                    // when doze starts, while the doze UI still draws, so SurfaceFlinger
+                    // applies it before DOZE_SUSPEND stops composition.
+                    mVotesStorage.updateGlobalVote(Vote.PRIORITY_FLICKER_REFRESH_RATE,
+                            Vote.forPhysicalRefreshRates(0f, mDozeRefreshRate));
+                    mVotesStorage.updateGlobalVote(Vote.PRIORITY_FLICKER_REFRESH_RATE_SWITCH,
+                            null);
+                    if (mLoggingEnabled) {
+                        Slog.d(TAG, "Display dozing (state=" + mDefaultDisplayState
+                                + "), voting " + mDozeRefreshRate + " Hz");
+                    }
+                    return;
+                }
                 if (mLoggingEnabled) {
                     Slog.d(TAG, "Display not on (state=" + mDefaultDisplayState
                             + "), keeping flicker refresh rate votes");
@@ -2639,6 +2659,14 @@ public class DisplayModeDirector {
                 return;
             }
 
+            float lowest = 0f;
+            for (Display.Mode mode : display.getSupportedModes()) {
+                if (lowest == 0f || mode.getRefreshRate() < lowest) {
+                    lowest = mode.getRefreshRate();
+                }
+            }
+            mDozeRefreshRate = lowest;
+
             setDefaultDisplayState(display.getState());
         }
 
@@ -2652,8 +2680,9 @@ public class DisplayModeDirector {
             if (mDefaultDisplayState != state) {
                 mDefaultDisplayState = state;
                 updateSensorStatus();
-                if (isDeviceActive()) {
-                    // Votes are frozen while the display is not on; refresh them now.
+                if (isDeviceActive() || Display.isDozeState(state)) {
+                    // Votes are frozen while the display is off; refresh them now. A
+                    // dozing display gets the lowest rate.
                     synchronized (mLock) {
                         updateFlickerRefreshRateVotes();
                     }
