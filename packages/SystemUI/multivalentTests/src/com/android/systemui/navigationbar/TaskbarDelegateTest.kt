@@ -8,6 +8,7 @@ import com.android.app.displaylib.DisplaysWithDecorationsRepositoryCompat
 import com.android.systemui.LauncherProxyService
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.dump.DumpManager
+import com.android.app.displaylib.PerDisplayRepository
 import com.android.systemui.model.SysUiState
 import com.android.systemui.navigationbar.gestural.EdgeBackGestureHandler
 import com.android.systemui.plugins.statusbar.StatusBarStateController
@@ -16,6 +17,7 @@ import com.android.systemui.shared.system.QuickStepContract
 import com.android.systemui.shared.system.TaskStackChangeListeners
 import com.android.systemui.statusbar.CommandQueue
 import com.android.systemui.statusbar.phone.AutoHideController
+import com.android.systemui.statusbar.phone.AutoHideControllerStore
 import com.android.systemui.statusbar.phone.LightBarController
 import com.android.systemui.statusbar.phone.LightBarTransitionsController
 import com.android.systemui.statusbar.phone.StatusBarKeyguardViewManager
@@ -31,6 +33,7 @@ import org.mockito.Mock
 import org.mockito.Mockito.any
 import org.mockito.Mockito.anyBoolean
 import org.mockito.Mockito.anyLong
+import org.mockito.Mockito.mock
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.`when`
@@ -88,6 +91,8 @@ class TaskbarDelegateTest : SysuiTestCase() {
                 mStatusBarKeyguardViewManager,
                 mStatusBarStateController,
                 mHandler,
+                { mock(PerDisplayRepository::class.java) as PerDisplayRepository<SysUiState> },
+                { mock(AutoHideControllerStore::class.java) },
             )
         mTaskbarDelegate.setDependencies(
             mCommandQueue,
